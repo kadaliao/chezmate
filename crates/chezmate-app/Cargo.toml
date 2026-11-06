@@ -15,3 +15,7 @@ path = "src/main.rs"
 chezmate-core.workspace = true
 gpui-kit.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
