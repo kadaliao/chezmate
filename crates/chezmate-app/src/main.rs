@@ -3,6 +3,7 @@ mod changes;
 mod environment;
 mod files;
 mod model;
+mod repository;
 
 use chezmate_core::ChezmoiOptions;
 use gpui_kit::component::{Theme, TitleBar};

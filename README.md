@@ -37,6 +37,7 @@ cargo test                      # 测试（需要已安装 chezmoi）
 
 - **Changes**：哪些文件和 dotfiles 不一致，每个文件会怎么变（差异视图）。`Apply` 用 dotfiles 的版本更新文件；文件在 chezmoi 之外被改过时，`Keep Local` 把你的修改存回 dotfiles。会丢失修改、运行脚本或删除文件的操作都会先确认。
 - **Files**：所有托管文件、它们的源文件和属性（模板、加密、私有……），添加新文件或停止托管。
+- **Repository**：dotfiles 源目录的 Git 仓库。提交、推送、拉取；拉取只更新 dotfiles，变化会出现在 Changes 里等你确认后再应用。
 - **Environment**：使用的 chezmoi、源目录、配置文件，按需运行诊断。
 
 ## 命令行
@@ -53,6 +54,8 @@ chezmate forget <目标…> --yes    # 停止托管（文件本身保留）
 chezmate cat <目标>
 chezmate source-path <目标>
 chezmate doctor
+chezmate git status|log|diff|fetch|pull|push
+chezmate git commit -m "说明"     # 提交源目录的全部变更
 ```
 
 相对路径一律相对于目标目录（通常是 home），和 `chezmate status` 打印的路径一致，与当前工作目录无关。也可以使用绝对路径或 `~/…`。
@@ -64,7 +67,7 @@ chezmate doctor
 {"ok": false, "error": {"kind": "conflict", "message": "…", "paths": [".zshrc"]}}
 ```
 
-错误类型 `kind`：`chezmoi_not_found`、`spawn_failed`、`timeout`、`conflict`、`command_failed`、`parse_error`、`invalid_request`、`io_error`。失败时退出码为 1。
+错误类型 `kind`：`chezmoi_not_found`、`git_not_found`、`spawn_failed`、`timeout`、`conflict`、`command_failed`、`parse_error`、`invalid_request`、`io_error`。失败时退出码为 1。
 
 ### 状态的两列含义
 

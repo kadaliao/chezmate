@@ -9,7 +9,7 @@
 | 0 | Workspace、最小 GPUI Kit 窗口 | 完成 |
 | 1 | Core（真实 chezmoi 操作）+ CLI（`--json`） | 完成 |
 | 2 | GUI：变更列表、差异视图、应用 / 保留本地修改、托管文件、环境 | 完成（视觉效果待人工确认） |
-| 3 | Git：源仓库状态、提交、拉取、推送 | 未开始 |
+| 3 | Git：源仓库状态、提交、拉取、推送 | 完成 |
 | 4 | MCP 服务（`chezmate mcp`，stdio） | 未开始 |
 
 ## 已实现（Core / CLI）
@@ -27,12 +27,27 @@
 | 渲染内容 / 源路径 | `cat` / `source_path` | `cat` / `source-path` | 集成 |
 | 诊断 | `doctor`（30 秒超时） | `doctor` | 单元 + 集成 |
 
+## 已实现（Git）
+
+| 操作 | Core（`Git`） | CLI（`chezmate git …`） | 说明 |
+| --- | --- | --- | --- |
+| 状态 | `status`（porcelain v2：分支、上游、领先 / 落后、变更） | `status` | 不受系统语言影响 |
+| 历史 | `log` | `log -n` | 空仓库返回空列表 |
+| 未提交差异 | `diff`（含未跟踪文件，最多 100 个） | `diff` | 首次提交前对比空树 |
+| 提交 | `commit_all`（`add --all` + `commit`） | `commit -m` | 空信息、无变更时报 `invalid_request` |
+| 获取 / 拉取 / 推送 | `fetch` / `pull` / `push` | `fetch` / `pull` / `push` | pull 用 `--rebase --autostash`，冲突时自动 `rebase --abort`；pull 只更新源目录，不 apply |
+
+网络操作设置 `GIT_TERMINAL_PROMPT=0`（需要凭据时直接失败，不会挂起），并有 180 秒超时。SSH 私钥需要由 ssh-agent / 钥匙串提供。
+
+测试：解析单元测试；沙箱集成测试使用本地裸仓库作为远端，另一个克隆模拟另一台机器（推送、获取、拉取、冲突回滚、空仓库）；git 全局配置隔离（`GIT_CONFIG_GLOBAL`、`GIT_CONFIG_NOSYSTEM`）。
+
 ## 已实现（GUI）
 
 | 页面 | 功能 | 测试 |
 | --- | --- | --- |
 | Changes | 待应用列表（创建 / 更新 / 删除 / 运行脚本，本地修改标记）、选中项的差异（统一 / 并排）、Apply、Apply All、Keep Local（re-add）；覆盖本地修改、运行脚本、删除前确认；模板不可 Keep Local 时禁用并说明原因 | 无头窗口 UI 测试 + 纯逻辑单元测试 |
 | Files | 托管文件列表与过滤、来源与属性、打开源文件 / 在 Finder 中显示、Add…（系统文件选择器）、Stop Managing（确认）、跳转到 Changes 查看待应用变化 | 无头窗口 UI 测试；文件选择器本身为原生 UI，测试直接调用同一模型命令 |
+| Repository | 分支与上游、领先 / 落后、Fetch / Pull / Push、未提交变更列表与差异、提交信息 + Commit All、最近 30 条历史；非 Git 仓库时给出说明 | 无头窗口 UI 测试（提交 → 推送 → 另一台机器推送 → Fetch → Pull → Changes 出现待应用变化） |
 | Environment | chezmoi 版本、路径、是否 Git 仓库、打开源目录 / 配置；按需运行 doctor | 无头窗口 UI 测试 |
 
 通用：后台线程读取，刷新时保留旧数据，新请求丢弃旧结果；同一时间只运行一个写操作；结果以通知显示；⌘R 刷新，↑↓ / j k 在变更列表中移动。

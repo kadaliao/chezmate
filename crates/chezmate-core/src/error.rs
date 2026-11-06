@@ -9,6 +9,9 @@ pub enum Error {
     #[error("chezmoi executable not found; searched: {searched}")]
     ChezmoiNotFound { searched: String },
 
+    #[error("git executable not found; searched: {searched}")]
+    GitNotFound { searched: String },
+
     #[error("failed to start `{command}`: {source}")]
     Spawn {
         command: String,
@@ -57,6 +60,7 @@ impl Error {
     pub fn kind(&self) -> &'static str {
         match self {
             Error::ChezmoiNotFound { .. } => "chezmoi_not_found",
+            Error::GitNotFound { .. } => "git_not_found",
             Error::Spawn { .. } => "spawn_failed",
             Error::Timeout { .. } => "timeout",
             Error::Conflict { .. } => "conflict",

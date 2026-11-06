@@ -290,3 +290,145 @@ fn adding_a_file_starts_managing_it(cx: &mut TestAppContext) {
         assert!(snapshot.managed.iter().any(|e| e.target == ".newrc"));
     });
 }
+
+/// Runs git with an isolated global config (identity, no signing).
+fn git(dir: &std::path::Path, config: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[gpui_kit::test]
+fn repository_commits_pushes_and_pulls(cx: &mut TestAppContext) {
+    let mut sb = Sandbox::new(&[("dot_hello", "hello\n")]);
+    let base = sb.home.parent().unwrap().to_path_buf();
+    let config = base.join("gitconfig");
+    fs::write(
+        &config,
+        "[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    sb.options
+        .env
+        .push(("GIT_CONFIG_GLOBAL".into(), config.clone().into()));
+    sb.options
+        .env
+        .push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+    let remote = base.join("remote.git");
+    git(
+        &base,
+        &config,
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(&sb.source, &config, &["init", "-q"]);
+    git(&sb.source, &config, &["add", "-A"]);
+    git(&sb.source, &config, &["commit", "-q", "-m", "Initial"]);
+    git(
+        &sb.source,
+        &config,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&sb.source, &config, &["push", "-q", "-u", "origin", "main"]);
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    // An edit to the source waiting to be committed.
+    fs::write(sb.source.join("dot_hello"), "hello\nmore\n").unwrap();
+
+    let (handle, view) = open(cx, &sb);
+    cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Repository, cx)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // Disabled until a message is typed.
+        window.click("commit", cx);
+        window.click("commit-message", cx);
+        window.input("Add a line", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        git(&sb.source, &config, &["log", "-1", "--format=%s"]).trim(),
+        "Initial"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        git(&sb.source, &config, &["log", "-1", "--format=%s"]).trim(),
+        "Add a line"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("commit-message").value(),
+            Some(""),
+            "message cleared"
+        );
+        window.click("push", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        git(&remote, &config, &["log", "-1", "--format=%s", "main"]).trim(),
+        "Add a line"
+    );
+
+    // Another machine pushes; fetch then pull it here.
+    let other = base.join("other");
+    git(
+        &base,
+        &config,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
+    fs::write(other.join("dot_hello"), "from laptop\n").unwrap();
+    git(&other, &config, &["commit", "-q", "-am", "Laptop"]);
+    git(&other, &config, &["push", "-q"]);
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("fetch", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let snapshot = view.read(cx).model().read(cx).snapshot().cloned().unwrap();
+        let Some(Ok(repo)) = &snapshot.repo else {
+            panic!("repo state missing")
+        };
+        assert_eq!(repo.status.behind, 1);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("pull", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        fs::read_to_string(sb.source.join("dot_hello")).unwrap(),
+        "from laptop\n"
+    );
+    assert_eq!(sb.home(".hello"), "hello\n", "pull never applies");
+    assert_eq!(
+        statuses(&view, cx),
+        vec![".hello"],
+        "the incoming change waits in Changes"
+    );
+}

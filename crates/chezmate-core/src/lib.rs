@@ -7,6 +7,7 @@
 mod chezmoi;
 mod doctor;
 mod error;
+mod git;
 mod managed;
 pub mod process;
 mod status;
@@ -17,5 +18,6 @@ pub use chezmoi::{
 };
 pub use doctor::{CheckResult, DoctorCheck, parse_doctor};
 pub use error::{Error, Result};
+pub use git::{Commit, Git, GitChange, GitFileStatus, RepoStatus, parse_status_v2};
 pub use managed::{EntryKind, ManagedEntry, SourceAttributes, classify, parse_managed};
 pub use status::{Change, StatusEntry, parse_status};

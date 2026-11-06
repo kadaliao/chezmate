@@ -104,6 +104,34 @@ enum Command {
     SourcePath { target: String },
     /// Run `chezmoi doctor` (no network).
     Doctor,
+    /// The git repository behind the source directory.
+    #[command(subcommand)]
+    Git(GitCommand),
+}
+
+#[derive(Subcommand)]
+enum GitCommand {
+    /// Branch, upstream, ahead/behind and uncommitted changes.
+    Status,
+    /// Recent commits.
+    Log {
+        #[arg(long, short = 'n', default_value_t = 20)]
+        limit: usize,
+    },
+    /// Uncommitted changes as a Git diff (includes untracked files).
+    Diff,
+    /// Stage everything and commit.
+    Commit {
+        #[arg(long, short = 'm')]
+        message: String,
+    },
+    /// Update remote-tracking branches.
+    Fetch,
+    /// Pull with --rebase --autostash. Only updates the source directory;
+    /// run `chezmate apply` afterwards. A conflicting pull is aborted.
+    Pull,
+    /// Push the current branch.
+    Push,
 }
 
 fn main() -> ExitCode {
@@ -127,6 +155,47 @@ fn connect(args: ChezmoiArgs) -> Result<Chezmoi, Error> {
         persistent_state: args.persistent_state,
         ..Default::default()
     })
+}
+
+fn run_git(command: GitCommand, chezmoi: &Chezmoi, out: &Output) -> Result<(), Error> {
+    let git = chezmoi.git()?;
+    match command {
+        GitCommand::Status => {
+            let status = git.status()?;
+            out.data(&status, || output::repo_status(&status));
+        }
+        GitCommand::Log { limit } => {
+            let commits = git.log(limit)?;
+            out.data(&commits, || output::log(&commits));
+        }
+        GitCommand::Diff => {
+            let diff = git.diff()?;
+            out.data(&json!({ "diff": diff }), || diff.clone());
+        }
+        GitCommand::Commit { message } => {
+            let hash = git.commit_all(&message)?;
+            out.data(&json!({ "commit": hash }), || {
+                format!("Committed {}", &hash[..hash.len().min(10)])
+            });
+        }
+        GitCommand::Fetch => {
+            git.fetch()?;
+            let status = git.status()?;
+            out.data(&status, || output::repo_status(&status));
+        }
+        GitCommand::Pull => {
+            git.pull()?;
+            let status = chezmoi.status(&[])?;
+            out.data(&json!({ "pending": status }), || {
+                format!("Pulled. {}", output::status(&status))
+            });
+        }
+        GitCommand::Push => {
+            git.push()?;
+            out.data(&json!({ "pushed": true }), || "Pushed.".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn run(command: Command, args: ChezmoiArgs, out: &Output) -> Result<(), Error> {
@@ -226,6 +295,7 @@ fn run(command: Command, args: ChezmoiArgs, out: &Output) -> Result<(), Error> {
             let checks = chezmoi.doctor()?;
             out.data(&checks, || output::doctor(&checks));
         }
+        Command::Git(command) => run_git(command, &chezmoi, out)?,
     }
     Ok(())
 }

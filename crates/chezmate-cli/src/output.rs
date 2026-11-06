@@ -3,7 +3,8 @@
 use std::fmt::Write as _;
 
 use chezmate_core::{
-    ApplyOutcome, Change, DoctorCheck, Error, Info, ManagedEntry, ReAddOutcome, StatusEntry,
+    ApplyOutcome, Change, Commit, DoctorCheck, Error, GitFileStatus, Info, ManagedEntry,
+    ReAddOutcome, RepoStatus, StatusEntry,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -146,6 +147,56 @@ pub fn doctor(checks: &[DoctorCheck]) -> String {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default();
         let _ = writeln!(s, "{result:8} {:width$}  {}", check.check, check.message);
+    }
+    s
+}
+
+pub fn repo_status(status: &RepoStatus) -> String {
+    let mut s = String::new();
+    let branch = status.branch.as_deref().unwrap_or("(detached)");
+    match &status.upstream {
+        Some(upstream) => {
+            let _ = writeln!(
+                s,
+                "{branch} → {upstream}  ({} to push, {} to pull)",
+                status.ahead, status.behind
+            );
+        }
+        None => {
+            let _ = writeln!(s, "{branch}  (no upstream)");
+        }
+    }
+    if status.changes.is_empty() {
+        let _ = writeln!(s, "No uncommitted changes.");
+    }
+    for change in &status.changes {
+        let code = match change.status {
+            GitFileStatus::Modified => "M",
+            GitFileStatus::Added => "A",
+            GitFileStatus::Deleted => "D",
+            GitFileStatus::Renamed => "R",
+            GitFileStatus::Copied => "C",
+            GitFileStatus::TypeChanged => "T",
+            GitFileStatus::Untracked => "?",
+            GitFileStatus::Conflicted => "U",
+        };
+        match &change.original_path {
+            Some(from) => {
+                let _ = writeln!(s, "{code} {from} → {}", change.path);
+            }
+            None => {
+                let _ = writeln!(s, "{code} {}", change.path);
+            }
+        }
+    }
+    s
+}
+
+pub fn log(commits: &[Commit]) -> String {
+    let mut s = String::new();
+    for commit in commits {
+        let date = commit.date.split('T').next().unwrap_or_default();
+        let _ = writeln!(s, "{} {date} {}", commit.short_hash, commit.subject);
     }
     s
 }

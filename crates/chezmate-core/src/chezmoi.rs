@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::doctor::{DoctorCheck, parse_doctor};
 use crate::error::{Error, Result};
+use crate::git::Git;
 use crate::managed::{ManagedEntry, parse_managed};
 use crate::process::{self, Captured};
 use crate::status::{StatusEntry, parse_status};
@@ -484,6 +485,17 @@ impl Chezmoi {
         let mut args: Vec<OsString> = vec!["source-path".into()];
         args.extend(self.target_args(&[target.to_string()])?);
         Ok(PathBuf::from(self.run(args, Some(READ_TIMEOUT))?.trim()))
+    }
+
+    /// Git for the source directory's working tree. Uses the same `PATH`
+    /// and extra environment as chezmoi.
+    pub fn git(&self) -> Result<Git> {
+        let paths = self.paths()?;
+        Git::new(
+            paths.working_tree,
+            self.search_path.clone(),
+            self.options.env.clone(),
+        )
     }
 
     /// `chezmoi doctor --no-network`. Bounded by a timeout because some tool

@@ -20,6 +20,7 @@ use crate::changes::ChangesView;
 use crate::environment::EnvironmentView;
 use crate::files::{FilesView, ReviewChange};
 use crate::model::{Dotfiles, DotfilesEvent};
+use crate::repository::RepositoryView;
 
 gpui_kit::actions!(chezmate, [Refresh, Quit]);
 
@@ -46,6 +47,7 @@ pub fn init(cx: &mut App) {
 pub enum Page {
     Changes,
     Files,
+    Repository,
     Environment,
 }
 
@@ -54,6 +56,7 @@ pub struct Chezmate {
     page: Page,
     changes: Entity<ChangesView>,
     files: Entity<FilesView>,
+    repository: Entity<RepositoryView>,
     environment: Entity<EnvironmentView>,
     _subscriptions: Vec<Subscription>,
 }
@@ -63,11 +66,14 @@ impl Chezmate {
         let model = cx.new(|cx| Dotfiles::new(options, cx));
         let changes = cx.new(|cx| ChangesView::new(model.clone(), window, cx));
         let files = cx.new(|cx| FilesView::new(model.clone(), window, cx));
+        let repository = cx.new(|cx| RepositoryView::new(model.clone(), window, cx));
         let environment = cx.new(|cx| EnvironmentView::new(model.clone(), cx));
         let subscriptions = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
             cx.subscribe_in(&model, window, |_, _, event: &DotfilesEvent, window, cx| {
-                let DotfilesEvent::Finished(result) = event;
+                let DotfilesEvent::Finished(result) = event else {
+                    return;
+                };
                 let note = match result {
                     Ok(message) => (
                         NotificationType::Success,
@@ -96,6 +102,7 @@ impl Chezmate {
             page: Page::Changes,
             changes,
             files,
+            repository,
             environment,
             _subscriptions: subscriptions,
         }
@@ -158,7 +165,8 @@ impl Chezmate {
                                 })
                             },
                         ))
-                        .child(item("Files", IconName::Folder, Page::Files)),
+                        .child(item("Files", IconName::Folder, Page::Files))
+                        .child(item("Repository", IconName::Github, Page::Repository)),
                 ),
             )
             .child(
@@ -213,6 +221,7 @@ impl Render for Chezmate {
         let page: AnyView = match self.page {
             Page::Changes => self.changes.clone().into(),
             Page::Files => self.files.clone().into(),
+            Page::Repository => self.repository.clone().into(),
             Page::Environment => self.environment.clone().into(),
         };
         let source = self

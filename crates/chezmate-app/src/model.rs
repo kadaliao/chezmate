@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chezmate_core::{
-    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, DiffOptions, DoctorCheck, Info,
-    ManagedEntry, StatusEntry,
+    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, Commit, DiffOptions, DoctorCheck, Info,
+    ManagedEntry, RepoStatus, StatusEntry,
 };
 use gpui_kit::component::diff::{DiffFile, DiffParseOptions};
 use gpui_kit::{Context, EventEmitter, SharedString, Task};
@@ -20,7 +20,20 @@ pub struct Snapshot {
     pub diffs: HashMap<SharedString, DiffFile>,
     /// The diff could not be read or parsed; status is still valid.
     pub diff_error: Option<String>,
+    /// The source directory's git repository; `None` if it is not one.
+    pub repo: Option<Result<Repo, String>>,
 }
+
+/// Local git state of the source directory (no network access).
+pub struct Repo {
+    pub status: RepoStatus,
+    pub log: Vec<Commit>,
+    /// Uncommitted changes, in repository order.
+    pub diffs: Vec<DiffFile>,
+    pub diff_error: Option<String>,
+}
+
+const HISTORY_LENGTH: usize = 30;
 
 impl Snapshot {
     pub fn managed_entry(&self, target: &str) -> Option<&ManagedEntry> {
@@ -35,6 +48,8 @@ impl Snapshot {
 /// The outcome of an operation, shown as a notification.
 pub enum DotfilesEvent {
     Finished(Result<String, String>),
+    /// A commit succeeded; the message input can be cleared.
+    Committed,
 }
 
 pub enum DoctorState {
@@ -144,6 +159,17 @@ impl Dotfiles {
         operation: impl FnOnce(&Chezmoi) -> Result<String, String> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
+        self.run_then(label, operation, None, cx)
+    }
+
+    /// Like `run`, emitting `on_success` as well when the operation succeeds.
+    fn run_then(
+        &mut self,
+        label: impl Into<SharedString>,
+        operation: impl FnOnce(&Chezmoi) -> Result<String, String> + Send + 'static,
+        on_success: Option<DotfilesEvent>,
+        cx: &mut Context<Self>,
+    ) {
         let Ok(chezmoi) = self.chezmoi.clone() else {
             return;
         };
@@ -159,7 +185,11 @@ impl Dotfiles {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
+                let succeeded = result.is_ok();
                 cx.emit(DotfilesEvent::Finished(result));
+                if succeeded && let Some(event) = on_success {
+                    cx.emit(event);
+                }
                 this.refresh(cx);
             });
         });
@@ -229,6 +259,71 @@ impl Dotfiles {
                 chezmoi
                     .add(&paths, &AddOptions::default())
                     .map(|_| format!("Added {}", paths.join(", ")))
+                    .map_err(|err| err.to_string())
+            },
+            cx,
+        );
+    }
+
+    /// Stages every change in the source repository and commits it.
+    pub fn commit(&mut self, message: String, cx: &mut Context<Self>) {
+        self.run_then(
+            "Committing",
+            move |chezmoi| {
+                let hash = chezmoi
+                    .git()
+                    .and_then(|git| git.commit_all(&message))
+                    .map_err(|err| err.to_string())?;
+                Ok(format!("Committed {}", &hash[..hash.len().min(7)]))
+            },
+            Some(DotfilesEvent::Committed),
+            cx,
+        );
+    }
+
+    pub fn fetch(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            "Fetching",
+            |chezmoi| {
+                let git = chezmoi.git().map_err(|err| err.to_string())?;
+                git.fetch().map_err(|err| err.to_string())?;
+                let status = git.status().map_err(|err| err.to_string())?;
+                Ok(match status.behind {
+                    0 => "No new commits on the remote".to_string(),
+                    1 => "1 new commit to pull".to_string(),
+                    n => format!("{n} new commits to pull"),
+                })
+            },
+            cx,
+        );
+    }
+
+    /// Pulls into the source directory. Nothing is applied: incoming
+    /// changes show up on the Changes page for review.
+    pub fn pull(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            "Pulling",
+            |chezmoi| {
+                let git = chezmoi.git().map_err(|err| err.to_string())?;
+                git.pull().map_err(|err| err.to_string())?;
+                let pending = chezmoi.status(&[]).map_err(|err| err.to_string())?;
+                Ok(match pending.len() {
+                    0 => "Pulled. Your home directory is up to date".to_string(),
+                    n => format!("Pulled. {n} incoming changes are ready to review in Changes"),
+                })
+            },
+            cx,
+        );
+    }
+
+    pub fn push(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            "Pushing",
+            |chezmoi| {
+                chezmoi
+                    .git()
+                    .and_then(|git| git.push())
+                    .map(|_| "Pushed your dotfiles".to_string())
                     .map_err(|err| err.to_string())
             },
             cx,
@@ -306,11 +401,37 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
         }
     };
 
+    let repo = info.source_is_git_repo.then(|| load_repo(chezmoi));
+
     Ok(Snapshot {
         info,
         status,
         managed,
         managed_index,
+        diffs,
+        diff_error,
+        repo,
+    })
+}
+
+fn load_repo(chezmoi: &Chezmoi) -> Result<Repo, String> {
+    let git = chezmoi.git().map_err(|err| err.to_string())?;
+    let status = git.status().map_err(|err| err.to_string())?;
+    let log = git.log(HISTORY_LENGTH).map_err(|err| err.to_string())?;
+    let (diffs, diff_error) = if status.is_clean() {
+        (Vec::new(), None)
+    } else {
+        match git.diff() {
+            Ok(patch) => match DiffFile::parse_with(&patch, DiffParseOptions::new()) {
+                Ok(files) => (files, None),
+                Err(err) => (Vec::new(), Some(format!("Could not read the diff: {err}"))),
+            },
+            Err(err) => (Vec::new(), Some(err.to_string())),
+        }
+    };
+    Ok(Repo {
+        status,
+        log,
         diffs,
         diff_error,
     })
@@ -353,7 +474,11 @@ mod tests {
         let snapshot = load(&chezmoi).unwrap();
         assert_eq!(snapshot.diff_error, None);
         for entry in &snapshot.status {
-            assert!(snapshot.diff(&entry.path).is_some(), "no diff for {}", entry.path);
+            assert!(
+                snapshot.diff(&entry.path).is_some(),
+                "no diff for {}",
+                entry.path
+            );
         }
 
         // Modified, deleted-locally and mode-changed targets.
@@ -383,7 +508,11 @@ mod tests {
             snapshot.diff_error
         );
         for entry in &snapshot.status {
-            println!("{} has diff: {}", entry.path, snapshot.diff(&entry.path).is_some());
+            println!(
+                "{} has diff: {}",
+                entry.path,
+                snapshot.diff(&entry.path).is_some()
+            );
         }
         assert_eq!(snapshot.diff_error, None);
     }
