@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/chezmate-core", "crates/chezmate-cli", "crates/chezmate-app"]
+default-members = ["crates/chezmate-core", "crates/chezmate-cli", "crates/chezmate-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kadaliao/chezmate"
+rust-version = "1.88"
+
+[workspace.dependencies]
+chezmate-core = { path = "crates/chezmate-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tempfile = "3"
+# GPUI Kit pins the matching GPUI snapshot; the app depends on nothing else from GPUI.
+gpui-kit = "0.9.0"
+
+[profile.dev]
+# GPUI is slow in pure debug builds; optimize dependencies only.
+[profile.dev.package."*"]
+opt-level = 2

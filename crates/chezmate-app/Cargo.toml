@@ -1,0 +1,17 @@
+[package]
+name = "chezmate-app"
+description = "Chezmate desktop app: a GPUI front end for chezmoi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "chezmate-app"
+path = "src/main.rs"
+
+[dependencies]
+chezmate-core.workspace = true
+gpui-kit.workspace = true
+anyhow.workspace = true
