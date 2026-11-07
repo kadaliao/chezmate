@@ -34,6 +34,7 @@ use crate::viewer::icon_tile;
 
 const INSTALL_COMMAND: &str = "brew install chezmoi";
 const INSTALL_URL: &str = "https://www.chezmoi.io/install/";
+const RELEASES_URL: &str = "https://github.com/kadaliao/chezmate/releases/latest";
 const NEW_REPOSITORY_URL: &str = "https://github.com/new";
 
 /// The answer field for one config question.
@@ -156,10 +157,10 @@ impl SetupView {
     fn render_no_chezmoi(&self, busy: bool, cx: &mut Context<Self>) -> AnyElement {
         page(
             Lucide::SquareTerminal,
-            tr("Chezmate needs chezmoi", "需要先安装 chezmoi"),
+            tr("Chezmate needs chezmoi", "需要 chezmoi"),
             tr(
-                "Chezmate keeps your settings files in sync with chezmoi, which is not installed on this computer. Install it with Homebrew:",
-                "Chezmate 在后台用 chezmoi 同步配置文件，这台电脑上还没有安装它。可以用 Homebrew 安装：",
+                "Chezmate keeps your settings files in sync with chezmoi. This copy of Chezmate does not include chezmoi (as when it runs from source), and none is installed on this computer. Install it with Homebrew:",
+                "Chezmate 在后台用 chezmoi 同步配置文件。这个版本的 Chezmate 没有自带 chezmoi（例如直接从源码运行时），这台电脑上也没有安装。可以用 Homebrew 安装：",
             ),
             cx,
         )
@@ -186,8 +187,8 @@ impl SetupView {
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(tr(
-                    "Other ways to install it are on chezmoi's website. Check again once it is installed.",
-                    "其他安装方式见 chezmoi 官网。装好后点「重新检查」。",
+                    "Other ways to install it are on chezmoi's website. Or download Chezmate from its releases page: that version includes chezmoi. Check again once it is installed.",
+                    "其他安装方式见 chezmoi 官网。也可以从发布页重新下载 Chezmate，发布版自带 chezmoi。装好后点「重新检查」。",
                 )),
         )
         .child(
@@ -208,6 +209,13 @@ impl SetupView {
                         .icon(Icon::new(Lucide::ExternalLink))
                         .label(tr("Install Guide", "安装说明"))
                         .on_click(|_, _, cx| cx.open_url(INSTALL_URL)),
+                )
+                .child(
+                    Button::new("download-chezmate")
+                        .ghost()
+                        .icon(Icon::new(Lucide::ExternalLink))
+                        .label(tr("Download Chezmate", "下载 Chezmate"))
+                        .on_click(|_, _, cx| cx.open_url(RELEASES_URL)),
                 ),
         )
         .into_any_element()
