@@ -21,7 +21,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FontWeight, IntoElement, ObjectFit,
     ParentElement as _, Render, Styled as _, StyledImage as _, Subscription, Window, div, img,
-    prelude::FluentBuilder as _,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::i18n::tr;
@@ -47,9 +47,6 @@ pub enum Content {
     Link(PathBuf),
     /// The source file is encrypted; its ciphertext is not worth showing.
     Encrypted,
-    /// The decrypted file on this computer, shown only when asked: a click
-    /// on a file should not put a secret on screen.
-    Hidden,
     Folder,
     Failed(String),
 }
@@ -177,8 +174,6 @@ pub struct FileViewer {
     diff: Entity<DiffState>,
     /// The snapshot the current tab was loaded from.
     loaded_for: Option<usize>,
-    /// The contents of an encrypted file were asked for.
-    revealed: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -216,7 +211,6 @@ impl FileViewer {
             dirty: false,
             diff,
             loaded_for: None,
-            revealed: false,
             _subscriptions: subscriptions,
         }
     }
@@ -262,15 +256,8 @@ impl FileViewer {
         self.target = target;
         self.editing = false;
         self.dirty = false;
-        self.revealed = false;
         self.tabs.clear();
         self.load(true, window, cx);
-    }
-
-    /// Shows the decrypted contents of an encrypted file.
-    pub fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.revealed = true;
-        self.load(false, window, cx);
     }
 
     /// Reads the file again after a refresh, unless it is being edited.
@@ -305,12 +292,6 @@ impl FileViewer {
         }
         let content = match self.tab {
             ViewTab::Diff => Content::Missing,
-            ViewTab::Here if entry.attributes.encrypted && !self.revealed => {
-                match fs::symlink_metadata(&entry.absolute) {
-                    Ok(_) => Content::Hidden,
-                    Err(_) => Content::Missing,
-                }
-            }
             ViewTab::Here => read_content(Path::new(&entry.absolute)),
             ViewTab::Source if entry.attributes.encrypted => Content::Encrypted,
             ViewTab::Source => read_content(Path::new(&entry.source_absolute)),
@@ -412,8 +393,9 @@ impl FileViewer {
         self.dirty = false;
         // What the file should now hold. The refresh after the save reads
         // it back: if the write failed, the editor shows the file as it is.
+        // Until then the file on disk may still be the old one.
         self.content = Content::Text(text.clone());
-        self.loaded_for = None;
+        self.loaded_for = self.snapshot(cx).map(|s| Arc::as_ptr(&s) as usize);
         self.model
             .update(cx, |model, cx| model.save_file(path, text, shown, cx));
         cx.notify();
@@ -530,52 +512,49 @@ impl FileViewer {
             .into_any_element()
     }
 
-    /// What saving an edit will do, which colour is which in a diff, or
-    /// that a source file is a template. Nothing otherwise: the details
-    /// above already say where the file is.
+    /// What saving an edit will do, which colour is which in a diff, that
+    /// a source file is a template, or that an encrypted file is shared
+    /// encrypted. Nothing otherwise: the details above already say where
+    /// the file is.
     fn render_caption(
         &self,
         entry: &ManagedEntry,
         snapshot: &Snapshot,
         cx: &App,
     ) -> Option<AnyElement> {
+        let encrypted = entry.attributes.encrypted;
         let text = match self.tab {
             ViewTab::Source if self.editing => tr(
                 "Editing the source file. Once saved, this computer shows a new version; Sync applies it here and uploads it.",
                 "正在编辑源文件。保存后这台电脑会显示「有新版本」，同步时会更新这台电脑并上传。",
+            ),
+            _ if self.editing && encrypted => tr(
+                "Editing the file on this computer. Once saved, it shows as changed here; Sync encrypts it and saves it to the shared version.",
+                "正在编辑这台电脑上的文件。保存后它会显示为「这台电脑上改过」，同步时加密后存到共享版本。",
             ),
             _ if self.editing => tr(
                 "Editing the file on this computer. Once saved, it shows as changed here; Sync saves it to the shared version.",
                 "正在编辑这台电脑上的文件。保存后它会显示为「这台电脑上改过」，同步时存到共享版本。",
             ),
             ViewTab::Diff => diff_caption(snapshot.overview.file(&self.target)),
+            ViewTab::Here if encrypted => {
+                return Some(caption(
+                    Some(Lucide::Lock),
+                    tr(
+                        "Encrypted: shown decrypted here, synced in encrypted form.",
+                        "加密文件：这里显示解密后的内容，同步时以加密形式保存到共享版本。",
+                    ),
+                    false,
+                    cx,
+                ));
+            }
             ViewTab::Source if entry.attributes.template => tr(
                 "A template: each computer gets its own result.",
                 "这是模板：每台电脑按它生成自己的内容。",
             ),
             _ => return None,
         };
-        let editing = self.editing;
-        Some(
-            div()
-                .flex_none()
-                .px_4()
-                .py_1p5()
-                .text_xs()
-                .truncate()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .map(|this| {
-                    if editing {
-                        this.bg(cx.theme().warning.opacity(0.12))
-                            .text_color(cx.theme().foreground)
-                    } else {
-                        this.text_color(cx.theme().muted_foreground)
-                    }
-                })
-                .child(text)
-                .into_any_element(),
-        )
+        Some(caption(None, text, self.editing, cx))
     }
 
     fn render_body(&self, entry: &ManagedEntry, cx: &mut Context<Self>) -> AnyElement {
@@ -681,40 +660,6 @@ impl FileViewer {
                 None,
                 cx,
             ),
-            Content::Hidden => v_flex()
-                .flex_1()
-                .min_h_0()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .p_8()
-                .child(icon_tile(Lucide::FileLock, cx))
-                .child(
-                    div()
-                        .text_base()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(tr("Encrypted file", "加密文件")),
-                )
-                .child(
-                    div()
-                        .max_w_96()
-                        .text_sm()
-                        .text_center()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(tr(
-                            "The shared version keeps it encrypted. The copy on this computer is decrypted, so it is shown only when you ask.",
-                            "共享版本里保存的是加密内容。这台电脑上的是解密后的文件，点了才显示。",
-                        )),
-                )
-                .child(
-                    Button::new("show-contents")
-                        .outline()
-                        .small()
-                        .icon(Icon::new(Lucide::Eye))
-                        .label(tr("Show Contents", "显示内容"))
-                        .on_click(cx.listener(|this, _, window, cx| this.reveal(window, cx))),
-                )
-                .into_any_element(),
             Content::Folder => placeholder(
                 Lucide::Folder,
                 tr("A folder", "这是一个文件夹"),
@@ -733,9 +678,34 @@ impl FileViewer {
     }
 }
 
+/// A note between the tabs and the contents. While editing it stands out,
+/// since saving will change a file.
+pub fn caption(icon: Option<Lucide>, text: &str, editing: bool, cx: &App) -> AnyElement {
+    h_flex()
+        .flex_none()
+        .items_start()
+        .gap_1p5()
+        .px_4()
+        .py_1p5()
+        .text_xs()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .map(|this| {
+            if editing {
+                this.bg(cx.theme().warning.opacity(0.12))
+                    .text_color(cx.theme().foreground)
+            } else {
+                this.text_color(cx.theme().muted_foreground)
+            }
+        })
+        .children(icon.map(|icon| div().flex_none().pt(px(2.)).child(Icon::new(icon).xsmall())))
+        .child(div().flex_1().min_w_0().child(text.to_string()))
+        .into_any_element()
+}
+
 /// A centred icon, title, explanation and, for a file on disk, buttons to
 /// open it elsewhere.
-fn placeholder(
+pub fn placeholder(
     icon: Lucide,
     title: &str,
     description: String,

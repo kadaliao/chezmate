@@ -20,6 +20,8 @@ mod app;
 mod assets;
 #[path = "../src/changes.rs"]
 mod changes;
+#[path = "../src/config.rs"]
+mod config;
 #[path = "../src/environment.rs"]
 mod environment;
 #[path = "../src/files.rs"]
@@ -80,7 +82,47 @@ fn demo(base: &Path) -> ChezmoiOptions {
     let (home, source, state) = (base.join("home"), base.join("source"), base.join("state"));
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&state).unwrap();
-    write(&state.join("chezmoi.toml"), "");
+    // age encryption with a key made for the demo, as `chezmoi init`
+    // would write it from the template below.
+    let chezmoi = chezmate_core::Chezmoi::new(ChezmoiOptions::default())
+        .unwrap()
+        .binary()
+        .to_path_buf();
+    let key = state.join("key.txt");
+    let keygen = Command::new(&chezmoi)
+        .args(["age-keygen", "--output"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(keygen.status.success(), "age-keygen");
+    let recipient = fs::read_to_string(&key)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("# public key: ").map(str::to_string))
+        .unwrap();
+    write(
+        &state.join("chezmoi.toml"),
+        &format!(
+            "encryption = \"age\"\n\n[age]\n  identity = {:?}\n  recipient = {recipient:?}\n\n[edit]\n  command = \"nvim\"\n\n[data]\n  email = \"demo@example.com\"\n",
+            key.display().to_string()
+        ),
+    );
+    let template = format!(
+        "{{{{- $email := promptStringOnce . \"email\" \"Email address\" -}}}}\nencryption = \"age\"\n\n[age]\n  identity = \"~/.config/chezmoi/key.txt\"\n  recipient = {recipient:?}\n\n[edit]\n  command = \"nvim\"\n\n[data]\n  email = {{{{ $email | quote }}}}\n"
+    );
+    let netrc = base.join("netrc");
+    write(
+        &netrc,
+        "machine api.example.com\n  login demo\n  password not-a-real-secret\n",
+    );
+    let encrypted = Command::new(&chezmoi)
+        .arg("--config")
+        .arg(state.join("chezmoi.toml"))
+        .arg("encrypt")
+        .arg(&netrc)
+        .output()
+        .unwrap();
+    assert!(encrypted.status.success(), "chezmoi encrypt");
     git(
         base,
         &config,
@@ -96,7 +138,14 @@ fn demo(base: &Path) -> ChezmoiOptions {
             laptop.to_str().unwrap(),
         ],
     );
+    fs::create_dir_all(&laptop).unwrap();
+    fs::write(
+        laptop.join("encrypted_private_dot_netrc.age"),
+        &encrypted.stdout,
+    )
+    .unwrap();
     for (path, contents) in [
+        (".chezmoi.toml.tmpl", template.as_str()),
         ("dot_zshrc", "export EDITOR=nvim\nalias ll=\"ls -l\"\n"),
         (
             "dot_gitconfig.tmpl",
@@ -356,8 +405,36 @@ fn main() {
         shoot(&mut cx, "files-folder");
         reveal(&mut cx, "scripts:install-tools.sh");
         shoot(&mut cx, "files-run-script");
+        reveal(&mut cx, ".netrc");
+        shoot(&mut cx, "files-encrypted");
     }
     cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+
+    // The Environment page with chezmoi's config and its template.
+    cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Environment, cx)));
+    let config = cx.update(|cx| view.read(cx).environment().read(cx).config().clone());
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let suffix = if mode == ThemeMode::Dark { "-dark" } else { "" };
+        cx.update(|cx| Theme::change(mode, None, cx));
+        shoot(&mut cx, &format!("environment{suffix}"));
+    }
+    cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("edit-config", cx);
+        window.input("# ", cx);
+    })
+    .unwrap();
+    shoot(&mut cx, "environment-editing");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel-config", cx);
+        config.update(cx, |config, cx| {
+            config.set_tab(config::ConfigTab::Template, window, cx)
+        });
+    })
+    .unwrap();
+    shoot(&mut cx, "environment-template");
 
     // Offline: the remote is gone.
     fs::remove_dir_all(base.join("remote.git")).unwrap();

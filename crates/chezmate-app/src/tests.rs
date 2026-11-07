@@ -915,7 +915,7 @@ fn a_failed_save_shows_the_file_as_it_is(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn encrypted_files_show_their_contents_on_request(cx: &mut TestAppContext) {
+fn encrypted_files_show_their_contents_and_sync_encrypted(cx: &mut TestAppContext) {
     use crate::viewer::Content;
 
     let sb = Sandbox::new(&[]);
@@ -952,17 +952,114 @@ fn encrypted_files_show_their_contents_on_request(cx: &mut TestAppContext) {
         )
         .unwrap();
 
+    // One click shows the decrypted contents.
     let (handle, view) = open(cx, &sb);
     show(cx, &view, Page::Files);
     click(cx, handle, &["file:.netrc"]);
     let viewer = file_viewer(&view, cx).expect("the file is selected");
-    cx.read(|cx| assert_eq!(viewer.read(cx).content(), &Content::Hidden));
-
-    click(cx, handle, &["show-contents"]);
     cx.read(|cx| {
         assert_eq!(
             viewer.read(cx).content(),
             &Content::Text("machine example.com\n".into())
         );
     });
+
+    // An edit here is saved to the shared version encrypted.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("edit-file", cx);
+        window.input("# ", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, &["save-file"]);
+    assert_eq!(sb.home(".netrc"), "# machine example.com\n");
+    assert_eq!(
+        overview_files(&view, cx),
+        vec![(".netrc".to_string(), FileState::ChangedHere)]
+    );
+    let model = cx.read(|cx| view.read(cx).model().clone());
+    cx.update(|cx| model.update(cx, |model, cx| model.keep_here(".netrc".into(), cx)));
+    cx.run_until_parked();
+    assert_eq!(overview_files(&view, cx), vec![]);
+    let source = sb.chezmoi().source_path(".netrc").unwrap();
+    let name = source.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("encrypted_"), "{name}");
+    let stored = fs::read(&source).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&stored).contains("machine"),
+        "the source file holds ciphertext"
+    );
+    assert_eq!(
+        sb.chezmoi().cat(".netrc").unwrap(),
+        "# machine example.com\n"
+    );
+}
+
+#[gpui_kit::test]
+fn environment_shows_and_edits_the_config(cx: &mut TestAppContext) {
+    use crate::config::ConfigTab;
+    use crate::viewer::Content;
+
+    let sb = Sandbox::new(&[
+        ("dot_hello", "hello\n"),
+        (".chezmoi.toml.tmpl", "[data]\n  name = \"demo\"\n"),
+    ]);
+    let config = sb.source.parent().unwrap().join("config/chezmoi.toml");
+    fs::remove_file(&config).unwrap();
+    let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Environment);
+    let panel = cx.read(|cx| view.read(cx).environment().read(cx).config().clone());
+
+    // No config yet: an empty editor, and saving creates the file.
+    cx.read(|cx| {
+        let panel = panel.read(cx);
+        assert_eq!(panel.tabs(), [ConfigTab::File, ConfigTab::Template]);
+        assert!(panel.is_missing());
+        assert_eq!(panel.content(), &Content::Text(String::new()));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("edit-config", cx);
+        window.input("# managed by chezmate", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, &["save-config"]);
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        "# managed by chezmate"
+    );
+    cx.read(|cx| {
+        let model = view.read(cx).model().read(cx);
+        assert!(model.error().is_none(), "{:?}", model.error());
+        assert!(model.snapshot().unwrap().info.config_exists);
+        let panel = panel.read(cx);
+        assert!(!panel.is_editing() && !panel.is_missing());
+        assert_eq!(
+            panel.content(),
+            &Content::Text("# managed by chezmate".into())
+        );
+    });
+
+    // The template next to it is shown and edited the same way.
+    cx.update_window(handle, |_, window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.set_tab(ConfigTab::Template, window, cx)
+        });
+        window.render_frame(cx);
+        window.click("edit-config", cx);
+        window.input("# shared\n", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, &["save-config"]);
+    assert_eq!(
+        fs::read_to_string(sb.source.join(".chezmoi.toml.tmpl")).unwrap(),
+        "# shared\n[data]\n  name = \"demo\"\n"
+    );
+    assert!(
+        sb.home.join(".hello").symlink_metadata().is_err(),
+        "nothing was applied"
+    );
 }

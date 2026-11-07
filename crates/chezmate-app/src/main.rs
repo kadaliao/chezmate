@@ -1,6 +1,7 @@
 mod app;
 mod assets;
 mod changes;
+mod config;
 mod environment;
 mod files;
 mod i18n;

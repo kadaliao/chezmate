@@ -73,7 +73,7 @@ impl Chezmate {
         let changes = cx.new(|cx| ChangesView::new(model.clone(), window, cx));
         let files = cx.new(|cx| FilesView::new(model.clone(), window, cx));
         let repository = cx.new(|cx| RepositoryView::new(model.clone(), window, cx));
-        let environment = cx.new(|cx| EnvironmentView::new(model.clone(), cx));
+        let environment = cx.new(|cx| EnvironmentView::new(model.clone(), window, cx));
         let subscriptions = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
             cx.subscribe_in(&model, window, |_, _, event: &DotfilesEvent, window, cx| {
@@ -136,6 +136,11 @@ impl Chezmate {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    pub fn environment(&self) -> &Entity<EnvironmentView> {
+        &self.environment
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn page(&self) -> Page {
         self.page
     }
@@ -194,7 +199,11 @@ impl Chezmate {
                         )))
                         .child(item(tr("Files", "文件"), IconName::Folder, Page::Files))
                         .child(item("Repository", IconName::Github, Page::Repository))
-                        .child(item("Environment", IconName::Settings2, Page::Environment)),
+                        .child(item(
+                            tr("Environment", "环境"),
+                            IconName::Settings2,
+                            Page::Environment,
+                        )),
                 ),
             )
     }

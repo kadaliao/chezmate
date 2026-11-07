@@ -412,8 +412,9 @@ impl Dotfiles {
         );
     }
 
-    /// Writes `contents` to a file in the home or source directory. `shown`
-    /// names the file in notifications.
+    /// Writes `contents` to a file in the home or source directory, or to
+    /// chezmoi's config file, creating its folder if needed. `shown` names
+    /// the file in notifications.
     pub fn save_file(
         &mut self,
         path: PathBuf,
@@ -425,7 +426,9 @@ impl Dotfiles {
         self.run(
             label,
             move |_| {
-                std::fs::write(&path, contents)
+                path.parent()
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .and_then(|_| std::fs::write(&path, contents))
                     .map(|_| tr(format!("Saved {shown}"), format!("已保存 {shown}")))
                     .map_err(|err| {
                         tr(
