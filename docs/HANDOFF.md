@@ -13,7 +13,7 @@
 
 ## 2. 现状（已完成、已提交）
 
-本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。2026-11-07 起推送到公开仓库 https://github.com/kadaliao/chezmate（`origin`），同日发布 v0.1.0 和 v0.1.1（GitHub Release 附 Apple Silicon 的 `Chezmate.app` 压缩包和命令行）。用户有 Apple 开发者账号：`scripts/package-macos.sh` 用钥匙串里的「Developer ID Application: Xingyi Liao (HMDAVG9B8J)」签名（hardened runtime），用户在 Mac mini 上存好的 notarytool 凭据名是 `chezmate-notary`（只在这台机器上）。发新版本：改 `Cargo.toml` 的 `workspace.package.version`，运行 `CHEZMATE_NOTARY_PROFILE=chezmate-notary scripts/package-macos.sh`，打 `v<版本>` 标签，`gh release create` 上传 `dist/` 里的 zip、tar.gz 和 `SHA256SUMS`。
+本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。2026-11-07 起推送到公开仓库 https://github.com/kadaliao/chezmate（`origin`），同日发布 v0.1.0、v0.1.1 和 v0.1.2（GitHub Release 附 Apple Silicon 的 `Chezmate.app` 压缩包和命令行）。用户有 Apple 开发者账号：`scripts/package-macos.sh` 用钥匙串里的「Developer ID Application: Xingyi Liao (HMDAVG9B8J)」签名（hardened runtime），用户在 Mac mini 上存好的 notarytool 凭据名是 `chezmate-notary`（只在这台机器上）。发新版本：改 `Cargo.toml` 的 `workspace.package.version`，运行 `CHEZMATE_NOTARY_PROFILE=chezmate-notary scripts/package-macos.sh`，打 `v<版本>` 标签，`gh release create` 上传 `dist/` 里的 zip、tar.gz 和 `SHA256SUMS`。
 
 | 部分 | 内容 |
 | --- | --- |
@@ -30,6 +30,8 @@
 用户要求：文件页按目标在系统上的路径排成可展开的目录树；右侧显示元信息和内容（默认只读），体验要好看。用户看过第一版后又要求：不要「打开」「打开源文件」按钮，单击后右侧上半部分只放基本信息，下半部分直接显示内容。已完成：`files.rs`（目录树、信息面板）、`viewer.rs`（查看器）、`language.rs`（高亮语言识别）、`assets.rs`（额外图标）。可编辑，保存写回家目录或源目录（等同于用户自己改文件；保存后概览页显示相应状态，同步照常处理）。
 
 之后用户又要求（2026-11-07）：加密文件不用再点「显示内容」，直接显示，上方标明同步时以加密形式保存即可；环境页的「打开配置」改成在页面下方用同样的编辑面板直接查看和编辑。已完成：`viewer.rs` 去掉 `Content::Hidden`，加密文件的「这台电脑」标签上方有一行带锁图标的说明；新增 `config.rs`（`ConfigPanel`：配置文件 + 源目录里的 `.chezmoi.<格式>.tmpl`，即 Core `Info::config_template`）；环境页改为中英双语。用户的真实配置就是由 `.chezmoi.toml.tmpl` 生成的，所以「这台电脑」标签会提示 `chezmoi init` 会覆盖直接改的内容。
+
+再之后（同日）：诊断运行后可以「复制给 Agent」（`environment.rs` 的 `agent_report`），发布为 v0.1.2。
 
 ## 3. 这次验证到的事实
 
