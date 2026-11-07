@@ -57,6 +57,9 @@ pub struct Info {
     pub paths: Paths,
     pub source_exists: bool,
     pub config_exists: bool,
+    /// The `.chezmoi.<format>.tmpl` in the source directory that
+    /// `chezmoi init` makes the config file from, if there is one.
+    pub config_template: Option<PathBuf>,
     pub source_is_git_repo: bool,
 }
 
@@ -305,6 +308,7 @@ impl Chezmoi {
             version,
             source_exists: paths.source_dir.is_dir(),
             config_exists: paths.config_file.is_file(),
+            config_template: config_template(&paths.source_dir),
             source_is_git_repo: paths.working_tree.join(".git").exists(),
             paths,
         })
@@ -608,6 +612,15 @@ fn push_types(args: &mut Vec<OsString>, flag: &str, types: &[EntryType]) {
         args.push(flag.into());
         args.push(value.join(",").into());
     }
+}
+
+/// The config file template `chezmoi init` reads: `.chezmoi.<format>.tmpl`
+/// at the top of the source directory, in the formats chezmoi knows.
+fn config_template(source_dir: &Path) -> Option<PathBuf> {
+    ["json", "jsonc", "toml", "yaml"]
+        .iter()
+        .map(|format| source_dir.join(format!(".chezmoi.{format}.tmpl")))
+        .find(|path| path.is_file())
 }
 
 fn parse_version(output: &str) -> Option<String> {

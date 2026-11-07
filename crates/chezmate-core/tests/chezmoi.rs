@@ -45,6 +45,15 @@ fn info_reports_sandbox_paths() {
     assert!(info.source_exists);
     assert!(info.config_exists);
     assert!(!info.source_is_git_repo);
+    assert_eq!(info.config_template, None);
+
+    // `chezmoi init` makes the config file from this template.
+    sb.write_source(".chezmoi.toml.tmpl", "[data]\n");
+    let info = sb.chezmoi.info().unwrap();
+    assert_eq!(
+        info.config_template,
+        Some(sb.source.join(".chezmoi.toml.tmpl"))
+    );
 }
 
 #[test]

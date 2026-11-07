@@ -76,6 +76,9 @@ pub fn info(info: &Info) -> String {
         "config       {config}{}",
         if info.config_exists { "" } else { "  (none)" }
     );
+    if let Some(template) = &info.config_template {
+        let _ = writeln!(s, "template     {}", template.display());
+    }
     s
 }
 
