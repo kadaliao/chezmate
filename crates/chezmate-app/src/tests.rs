@@ -758,3 +758,176 @@ fn sync_works_offline(cx: &mut TestAppContext) {
         assert_eq!(shared.ahead, 1, "waiting to be uploaded");
     });
 }
+
+/// The viewer of the selected file on the Files page.
+fn file_viewer(
+    view: &Entity<Chezmate>,
+    cx: &mut TestAppContext,
+) -> Option<Entity<crate::viewer::FileViewer>> {
+    cx.read(|cx| view.read(cx).files().read(cx).viewer().cloned())
+}
+
+#[gpui_kit::test]
+fn files_tree_opens_views_and_edits(cx: &mut TestAppContext) {
+    use crate::viewer::{Content, ViewTab};
+
+    let sb = Sandbox::new(&[
+        ("dot_zshrc", "export A=1\n"),
+        ("dot_profile.tmpl", "os={{ .chezmoi.os }}\n"),
+        ("run_once_setup.sh", "#!/bin/sh\ntrue\n"),
+    ]);
+    fs::create_dir_all(sb.source.join("dot_config/nvim")).unwrap();
+    fs::write(sb.source.join("dot_config/nvim/init.lua"), "-- hello\n").unwrap();
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    fs::write(sb.source.join("dot_zshrc"), "export A=2\n").unwrap();
+    let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Files);
+
+    // Folders start collapsed; scripts have a row of their own.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("dir:.config").is_some());
+        assert!(window.try_find("file:.zshrc").is_some());
+        assert!(window.try_find("dir:scripts:").is_some());
+        assert!(window.try_find("file:.config/nvim/init.lua").is_none());
+    })
+    .unwrap();
+    click(cx, handle, &["dir:.config"]);
+    click(cx, handle, &["dir:.config/nvim"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("file:.config/nvim/init.lua", cx);
+        assert_eq!(
+            view.read(cx).files().read(cx).selected(),
+            Some(".config/nvim/init.lua")
+        );
+        assert!(
+            view.read(cx).files().read(cx).viewer().is_none(),
+            "one click shows the details"
+        );
+        window.double_click("file:.config/nvim/init.lua", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Double-click opens the file read-only, as it is on this computer.
+    let viewer = file_viewer(&view, cx).expect("double-click opens the viewer");
+    cx.read(|cx| {
+        let viewer = viewer.read(cx);
+        assert_eq!(viewer.tab(), ViewTab::Here);
+        assert_eq!(viewer.tabs(), [ViewTab::Here, ViewTab::Source]);
+        assert_eq!(viewer.content(), &Content::Text("-- hello\n".into()));
+        assert_eq!(viewer.text(cx), "-- hello\n");
+        assert!(!viewer.is_editing());
+    });
+
+    // Editing is a choice; saving writes the file in the home directory.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("edit-file", cx);
+        window.input("x", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| viewer.read(cx).has_unsaved_changes()));
+
+    // An unsaved edit keeps the selection where it is.
+    click(cx, handle, &["file:.zshrc"]);
+    cx.read(|cx| {
+        assert_eq!(
+            view.read(cx).files().read(cx).selected(),
+            Some(".config/nvim/init.lua")
+        );
+    });
+
+    click(cx, handle, &["save-file"]);
+    assert_eq!(sb.home(".config/nvim/init.lua"), "x-- hello\n");
+    assert_eq!(
+        overview_files(&view, cx),
+        vec![
+            (".config/nvim/init.lua".to_string(), FileState::ChangedHere),
+            (".zshrc".to_string(), FileState::UpdateAvailable),
+        ]
+    );
+    cx.read(|cx| assert!(!viewer.read(cx).is_editing()));
+
+    // A file with a pending change opens on its diff.
+    click(cx, handle, &["viewer-back"]);
+    click(cx, handle, &["file:.zshrc"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click("file:.zshrc", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let viewer = viewer.read(cx);
+        assert_eq!(viewer.target(), ".zshrc");
+        assert_eq!(viewer.tab(), ViewTab::Diff);
+    });
+
+    // A file made from a template is edited through its source.
+    click(cx, handle, &["viewer-back"]);
+    click(cx, handle, &["file:.profile"]);
+    click(cx, handle, &["open-viewer"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("edit-file").disabled(), Some(true));
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        viewer.update(cx, |viewer, cx| viewer.set_tab(ViewTab::Source, window, cx));
+        window.render_frame(cx);
+        assert_ne!(window.find("edit-file").disabled(), Some(true));
+    })
+    .unwrap();
+    cx.read(|cx| {
+        assert_eq!(
+            viewer.read(cx).content(),
+            &Content::Text("os={{ .chezmoi.os }}\n".into())
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_failed_save_shows_the_file_as_it_is(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let sb = Sandbox::new(&[("dot_hello", "hello\n")]);
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    let path = sb.home.join(".hello");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+    let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Files);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click("file:.hello", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // The mode differs from the source, so the viewer opens on the diff.
+    let viewer = file_viewer(&view, cx).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        viewer.update(cx, |viewer, cx| {
+            viewer.set_tab(crate::viewer::ViewTab::Here, window, cx)
+        });
+        window.render_frame(cx);
+        window.click("edit-file", cx);
+        window.input("x", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, &["save-file"]);
+
+    assert_eq!(sb.home(".hello"), "hello\n", "the write failed");
+    cx.read(|cx| {
+        let viewer = viewer.read(cx);
+        assert!(!viewer.is_editing());
+        assert_eq!(
+            viewer.text(cx),
+            "hello\n",
+            "the editor shows the file as it is"
+        );
+    });
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+}

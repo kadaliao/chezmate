@@ -1,11 +1,14 @@
 mod app;
+mod assets;
 mod changes;
 mod environment;
 mod files;
 mod i18n;
+mod language;
 mod model;
 mod overview;
 mod repository;
+mod viewer;
 
 use chezmate_core::ChezmoiOptions;
 use gpui_kit::component::{Theme, TitleBar};
@@ -13,7 +16,7 @@ use gpui_kit::{AppContext as _, WindowBounds, WindowOptions, px, size};
 
 fn main() {
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(assets::AppAssets)
         .run(|cx| {
             gpui_kit::init(cx);
             i18n::init();

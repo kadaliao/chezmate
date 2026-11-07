@@ -16,6 +16,8 @@
 
 #[path = "../src/app.rs"]
 mod app;
+#[path = "../src/assets.rs"]
+mod assets;
 #[path = "../src/changes.rs"]
 mod changes;
 #[path = "../src/environment.rs"]
@@ -24,12 +26,16 @@ mod environment;
 mod files;
 #[path = "../src/i18n.rs"]
 mod i18n;
+#[path = "../src/language.rs"]
+mod language;
 #[path = "../src/model.rs"]
 mod model;
 #[path = "../src/overview.rs"]
 mod overview;
 #[path = "../src/repository.rs"]
 mod repository;
+#[path = "../src/viewer.rs"]
+mod viewer;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -101,6 +107,14 @@ fn demo(base: &Path) -> ChezmoiOptions {
             "set -gx PATH $HOME/.local/bin $PATH\n",
         ),
         ("dot_vimrc", "set number\nsyntax on\n"),
+        (
+            "dot_config/nvim/init.lua",
+            "-- Neovim settings\nlocal opt = vim.opt\n\nopt.number = true\nopt.relativenumber = true\nopt.expandtab = true\nopt.shiftwidth = 2\n\nvim.keymap.set(\"n\", \"<leader>w\", \"<cmd>write<cr>\", { desc = \"Save\" })\n\nfor _, plugin in ipairs({ \"telescope\", \"treesitter\" }) do\n  pcall(require, plugin)\nend\n",
+        ),
+        (
+            "dot_local/bin/executable_backup-notes",
+            "#!/usr/bin/env bash\nset -euo pipefail\n\n# Copy notes to the backup disk.\nrsync -a --delete \"$HOME/Notes/\" \"/Volumes/Backup/Notes/\"\necho \"done: $(date)\"\n",
+        ),
         ("dot_tmux.conf", "set -g mouse on\n"),
         (
             "run_once_install-tools.sh",
@@ -113,6 +127,30 @@ fn demo(base: &Path) -> ChezmoiOptions {
     ] {
         write(&laptop.join(path), contents);
     }
+    // A picture and a binary property list, as real setups have.
+    let picture = laptop.join("Library/Application Support/Demo/logo.png");
+    fs::create_dir_all(picture.parent().unwrap()).unwrap();
+    let status = Command::new("sips")
+        .args(["-s", "format", "png", "-Z", "256"])
+        .arg("/System/Applications/Calculator.app/Contents/Resources/AppIcon.icns")
+        .arg("--out")
+        .arg(&picture)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "sips");
+    let plist = laptop.join("Library/Preferences/com.example.demo.plist");
+    fs::create_dir_all(plist.parent().unwrap()).unwrap();
+    fs::write(
+        &plist,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>AppleShowAllFiles</key><true/><key>KeyRepeat</key><integer>2</integer><key>NSUserKeyEquivalents</key><dict><key>Hide Others</key><string>@~h</string></dict></dict></plist>\n",
+    )
+    .unwrap();
+    let status = Command::new("plutil")
+        .args(["-convert", "binary1"])
+        .arg(&plist)
+        .status()
+        .unwrap();
+    assert!(status.success(), "plutil");
     git(&laptop, &config, &["add", "-A"]);
     git(&laptop, &config, &["commit", "-qm", "Initial"]);
     git(&laptop, &config, &["push", "-q", "origin", "main"]);
@@ -189,8 +227,7 @@ fn main() {
     let options = demo(&base);
 
     let platform = gpui_kit::platform::current_platform(false);
-    let mut cx =
-        VisualTestAppContext::with_asset_source(platform, Arc::new(gpui_kit::assets::Assets));
+    let mut cx = VisualTestAppContext::with_asset_source(platform, Arc::new(assets::AppAssets));
     cx.update(|cx| {
         gpui_kit::init(cx);
         crate::i18n::init();
@@ -262,6 +299,65 @@ fn main() {
 
     cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Changes, cx)));
     shoot(&mut cx, "advanced-changes");
+
+    // The Files page: the tree, a file's details and the viewer.
+    let files = cx.update(|cx| view.read(cx).files().clone());
+    cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Files, cx)));
+    let reveal = |cx: &mut VisualTestAppContext, target: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            files.update(cx, |files, cx| files.reveal(target, window, cx));
+        })
+        .unwrap();
+    };
+    let open = |cx: &mut VisualTestAppContext, tab: Option<viewer::ViewTab>| {
+        cx.update_window(handle, |_, window, cx| {
+            files.update(cx, |files, cx| files.open(tab, window, cx));
+        })
+        .unwrap();
+    };
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let suffix = if mode == ThemeMode::Dark { "-dark" } else { "" };
+        cx.update(|cx| Theme::change(mode, None, cx));
+        reveal(&mut cx, ".local/bin/backup-notes");
+        reveal(&mut cx, ".config/nvim/init.lua");
+        shoot(&mut cx, &format!("files-details{suffix}"));
+        open(&mut cx, None);
+        shoot(&mut cx, &format!("files-viewer{suffix}"));
+        if mode == ThemeMode::Dark {
+            continue;
+        }
+        reveal(&mut cx, ".vimrc");
+        shoot(&mut cx, "files-details-changed");
+        open(&mut cx, None);
+        shoot(&mut cx, "files-viewer-diff");
+        reveal(&mut cx, ".gitconfig");
+        open(&mut cx, Some(viewer::ViewTab::Source));
+        shoot(&mut cx, "files-viewer-template-source");
+        reveal(&mut cx, ".local/bin/backup-notes");
+        open(&mut cx, None);
+        shoot(&mut cx, "files-viewer-script");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("edit-file", cx);
+            window.input("# edited\n", cx);
+        })
+        .unwrap();
+        shoot(&mut cx, "files-viewer-editing");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("cancel-edit", cx);
+        })
+        .unwrap();
+        reveal(&mut cx, "Library/Application Support/Demo/logo.png");
+        open(&mut cx, None);
+        shoot(&mut cx, "files-viewer-image");
+        reveal(&mut cx, "Library/Preferences/com.example.demo.plist");
+        open(&mut cx, None);
+        shoot(&mut cx, "files-viewer-binary");
+        reveal(&mut cx, "scripts:install-tools.sh");
+        shoot(&mut cx, "files-details-script");
+    }
+    cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
 
     // Offline: the remote is gone.
     fs::remove_dir_all(base.join("remote.git")).unwrap();

@@ -84,7 +84,7 @@
 | 页面 | 功能 | 测试 |
 | --- | --- | --- |
 | Changes | 待应用列表（创建 / 更新 / 删除 / 运行脚本，本地修改标记）、选中项的差异（统一 / 并排）、Apply、Apply All、Keep Local（re-add）；覆盖本地修改、运行脚本、删除前确认；模板不可 Keep Local 时禁用并说明原因 | 无头窗口 UI 测试 + 纯逻辑单元测试 |
-| Files | 托管文件列表与过滤、来源与属性、打开源文件 / 在 Finder 中显示、Add…（系统文件选择器）、Stop Managing（确认）、跳转到 Changes 查看待应用变化 | 无头窗口 UI 测试；文件选择器本身为原生 UI，测试直接调用同一模型命令 |
+| Files（文件） | 按目标在家目录里的路径排成目录树（文件夹在前，可展开、全部折叠、过滤时自动展开；脚本单独一组；有变化的文件和包含它们的文件夹带颜色圆点）；单击显示信息（状态、位置、类型、大小、修改时间、权限、属性，有变化时说明并可查看差异）；双击或「打开」在右侧查看：「差异 / 这台电脑 / 源文件」三个标签，只读代码编辑器（行号、语法高亮、⌘F 搜索），图片预览，二进制 plist 用 `plutil` 转成 XML 只读显示，其他二进制、过大、缺失、加密源文件给出说明；点「编辑」才能改，保存写回家目录或源目录（模板只能改源文件），未保存时不能切换文件；Add…、停止管理（确认）、跳转到 Changes；中英双语 | 纯逻辑单元测试（目录树、语言识别、内容分类含真实 plist 转换、标签页）；无头窗口 UI 测试（展开、单击 / 双击、编辑保存后概览状态变化、未保存时切换被拦、有变化默认显示差异、模板只能改源文件）；文件选择器本身为原生 UI，测试直接调用同一模型命令；离屏截图目测 |
 | Repository | 分支与上游、领先 / 落后、Fetch / Pull / Push、未提交变更列表与差异、提交信息 + Commit All、最近 30 条历史；非 Git 仓库时给出说明 | 无头窗口 UI 测试（提交 → 推送 → 另一台机器推送 → Fetch → Pull → Changes 出现待应用变化） |
 | Environment | chezmoi 版本、路径、是否 Git 仓库、打开源目录 / 配置；按需运行 doctor | 无头窗口 UI 测试 |
 
@@ -116,6 +116,8 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 - 从 Finder 启动的应用 `PATH` 很短，Core 会为子进程补上 `/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等目录，以便 chezmoi 找到 gpg、git；
 - GUI 已在 macOS 浅色模式下用真实配置截图检查四个页面（2026-11-07），并据此调整：普通目录不单独列出、列表行统一两行、Files 详情的操作移到信息下方、加密文件改为在 Finder 中显示源文件。深色模式、Linux、Windows 尚未检查；
 - 启用 GPUI Kit 的 `test-support` 后，`gpui-fast` 的精确版本要求与默认解析结果冲突（taffy 等），因此 Cargo.lock 以上游 gpui-kit v0.9.0 的锁文件为基础生成。升级 gpui-kit 时应同样参照上游锁文件；
-- 简化界面（概览、同步、侧栏、状态栏）中英双语；高级页面只有英文；
+- 简化界面（概览、同步、侧栏、状态栏）和「文件」页中英双语；其余高级页面（Changes、Repository、Environment）只有英文；
+- 语法高亮用 GPUI Kit 的 `syntect` 特性（纯 Rust，bat 的语法集合，约 200 种语言）；Shell 配置、`.gitconfig`、`~/.ssh/config`、无扩展名但有 `#!` 的脚本按名字或首行识别（`src/language.rs`）；
+- GPUI Kit 默认只打包组件用到的图标，文件页额外用到的 Lucide 图标在 `src/assets.rs` 里用 `icon_assets!` 加入；
 - 两台电脑改了共享版本里的同一个文件、且这台电脑的改动还没上传时，同步的拉取会被撤销并报错，需要在 Repository 页或终端处理；
-- 真机截图需要屏幕解锁；锁屏时用 `CHEZMATE_SCREENSHOTS=<目录> cargo test -p chezmate-app --test screenshots` 离屏渲染（2026-11-07 用它检查了概览页的中英文、浅色和深色）。
+- 真机截图需要屏幕解锁；锁屏时用 `CHEZMATE_SCREENSHOTS=<目录> cargo test -p chezmate-app --test screenshots` 离屏渲染（2026-11-07 用它检查了概览页的中英文、浅色和深色，以及文件页的目录树、信息、文本 / 差异 / 模板源文件 / 编辑中 / 图片 / 二进制 plist）。

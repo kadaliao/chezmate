@@ -2,6 +2,7 @@
 //! background thread and runs operations one at a time.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chezmate_core::{
@@ -12,6 +13,7 @@ use gpui_kit::component::diff::{DiffFile, DiffParseOptions};
 use gpui_kit::{Context, EventEmitter, SharedString, Task};
 
 use crate::i18n::tr;
+use crate::language::language_for;
 
 /// Everything the Changes and Files pages show, read in one refresh.
 pub struct Snapshot {
@@ -57,6 +59,19 @@ impl Snapshot {
 
     pub fn local_diff(&self, target: &str) -> Option<&DiffFile> {
         self.local_diffs.get(target)
+    }
+
+    /// The diff to show for a file: for a file changed here, from the shared
+    /// version to this computer; otherwise what a sync would do here.
+    pub fn review_diff(&self, target: &str) -> Option<&DiffFile> {
+        let changed_here = self
+            .overview
+            .file(target)
+            .is_some_and(|f| f.state == FileState::ChangedHere);
+        changed_here
+            .then(|| self.local_diff(target))
+            .flatten()
+            .or_else(|| self.diff(target))
     }
 }
 
@@ -397,6 +412,32 @@ impl Dotfiles {
         );
     }
 
+    /// Writes `contents` to a file in the home or source directory. `shown`
+    /// names the file in notifications.
+    pub fn save_file(
+        &mut self,
+        path: PathBuf,
+        contents: String,
+        shown: String,
+        cx: &mut Context<Self>,
+    ) {
+        let label = tr(format!("Saving {shown}"), format!("正在保存 {shown}"));
+        self.run(
+            label,
+            move |_| {
+                std::fs::write(&path, contents)
+                    .map(|_| tr(format!("Saved {shown}"), format!("已保存 {shown}")))
+                    .map_err(|err| {
+                        tr(
+                            format!("Could not save {shown}: {err}"),
+                            format!("保存 {shown} 失败：{err}"),
+                        )
+                    })
+            },
+            cx,
+        );
+    }
+
     /// Applies `targets` (all when empty). `force` overwrites local edits.
     pub fn apply(&mut self, targets: Vec<String>, force: bool, cx: &mut Context<Self>) {
         let label = describe("Applying", &targets);
@@ -671,13 +712,7 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
     } else {
         match chezmoi.diff(&[], &DiffOptions::default()) {
             Ok(patch) => match DiffFile::parse_with(&patch, DiffParseOptions::new()) {
-                Ok(files) => (
-                    files
-                        .into_iter()
-                        .map(|file| (file.path().clone(), file))
-                        .collect(),
-                    None,
-                ),
+                Ok(files) => (by_path(files), None),
                 Err(err) => (
                     HashMap::new(),
                     Some(format!("Could not read the diff: {err}")),
@@ -704,12 +739,7 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
             .diff(&changed_here, &options)
             .ok()
             .and_then(|patch| DiffFile::parse_with(&patch, DiffParseOptions::new()).ok())
-            .map(|files| {
-                files
-                    .into_iter()
-                    .map(|file| (file.path().clone(), file))
-                    .collect()
-            })
+            .map(by_path)
             .unwrap_or_default()
     };
 
@@ -725,6 +755,17 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
         overview,
         local_diffs,
     })
+}
+
+/// Diffs by target path, each highlighted in its file's language.
+fn by_path(files: Vec<DiffFile>) -> HashMap<SharedString, DiffFile> {
+    files
+        .into_iter()
+        .map(|file| {
+            let language = language_for(file.path(), "");
+            (file.path().clone(), file.with_language(language))
+        })
+        .collect()
 }
 
 fn load_repo(chezmoi: &Chezmoi) -> Result<Repo, String> {

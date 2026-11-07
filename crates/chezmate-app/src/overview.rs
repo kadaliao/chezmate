@@ -137,7 +137,7 @@ pub fn state_title(file: &FileItem) -> &'static str {
 }
 
 /// One or two sentences on what happened and what a sync does.
-fn explanation(file: &FileItem) -> String {
+pub fn explanation(file: &FileItem) -> String {
     let base = match file.state {
         FileState::ChangedHere => match file.cannot_save {
             None => tr(
@@ -208,7 +208,7 @@ fn step_explanation(step: &SetupStep) -> &'static str {
     }
 }
 
-fn diff_caption(file: Option<&FileItem>) -> &'static str {
+pub fn diff_caption(file: Option<&FileItem>) -> &'static str {
     match file.map(|f| f.state) {
         None => tr("The script that will run.", "将要运行的脚本。"),
         Some(FileState::ChangedHere) => tr(
@@ -388,16 +388,7 @@ impl OverviewView {
         let key = (Arc::as_ptr(&snapshot) as usize, self.selected.clone());
         if self.shown.as_ref() != Some(&key) {
             let file = match &self.selected {
-                Some(Selection::File(target)) => {
-                    let changed_here = snapshot
-                        .overview
-                        .file(target)
-                        .is_some_and(|f| f.state == FileState::ChangedHere);
-                    changed_here
-                        .then(|| snapshot.local_diff(target))
-                        .flatten()
-                        .or_else(|| snapshot.diff(target))
-                }
+                Some(Selection::File(target)) => snapshot.review_diff(target),
                 Some(Selection::Step(target)) => snapshot.diff(target),
                 None => None,
             };

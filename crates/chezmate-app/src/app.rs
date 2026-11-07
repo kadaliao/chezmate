@@ -192,7 +192,7 @@ impl Chezmate {
                             IconName::Inbox,
                             Page::Changes,
                         )))
-                        .child(item("Files", IconName::Folder, Page::Files))
+                        .child(item(tr("Files", "文件"), IconName::Folder, Page::Files))
                         .child(item("Repository", IconName::Github, Page::Repository))
                         .child(item("Environment", IconName::Settings2, Page::Environment)),
                 ),
