@@ -6,6 +6,7 @@ use gpui_kit::component::{
     sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
     spinner::Spinner,
     status_bar::StatusBar,
+    tag::Tag,
     v_flex,
 };
 use gpui_kit::{
@@ -63,6 +64,8 @@ pub struct Chezmate {
     files: Entity<FilesView>,
     repository: Entity<RepositoryView>,
     environment: Entity<EnvironmentView>,
+    /// Demo mode: the setup is made up, in a temporary folder.
+    demo: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -111,8 +114,15 @@ impl Chezmate {
             files,
             repository,
             environment,
+            demo: false,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Marks the window as showing demo mode's made-up setup.
+    pub fn demo(mut self, demo: bool) -> Self {
+        self.demo = demo;
+        self
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -278,12 +288,23 @@ impl Render for Chezmate {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Chezmate"),
                         )
+                        .when(self.demo, |row| {
+                            row.child(Tag::warning().small().child(tr("Demo", "演示模式")))
+                        })
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .truncate()
-                                .child(source),
+                                .child(if self.demo {
+                                    tr(
+                                        "Made-up files in a temporary folder; your own dotfiles are not touched",
+                                        "临时生成的演示文件，不会改动你自己的配置文件",
+                                    )
+                                    .into()
+                                } else {
+                                    source
+                                }),
                         ),
                 ),
             )

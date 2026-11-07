@@ -68,9 +68,15 @@ impl Sandbox {
 }
 
 fn open(cx: &mut TestAppContext, sandbox: &Sandbox) -> (AnyWindowHandle, Entity<Chezmate>) {
+    open_with(cx, sandbox.options.clone())
+}
+
+fn open_with(
+    cx: &mut TestAppContext,
+    options: ChezmoiOptions,
+) -> (AnyWindowHandle, Entity<Chezmate>) {
     cx.update(gpui_kit::init);
     cx.update(crate::app::init);
-    let options = sandbox.options.clone();
     let opened = cx.update(|cx| {
         gpui_kit::open_window(
             WindowOptions {
@@ -1076,4 +1082,48 @@ fn environment_shows_and_edits_the_config(cx: &mut TestAppContext) {
         sb.home.join(".hello").symlink_metadata().is_err(),
         "nothing was applied"
     );
+}
+
+#[gpui_kit::test]
+fn demo_mode_has_files_in_every_state(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().canonicalize().unwrap();
+    let options = crate::demo::create_in(&base).unwrap();
+    let (_, view) = open_with(cx, options);
+
+    let files = overview_files(&view, cx);
+    for (target, state) in [
+        (".zshrc", FileState::ChangedHere),
+        (".vimrc", FileState::BothChanged),
+        (".gitconfig", FileState::ChangedHere),
+        (".tmux.conf", FileState::DeletedHere),
+        (".config/fish/config.fish", FileState::UpdateAvailable),
+        (".config/git/ignore", FileState::UpdateAvailable),
+    ] {
+        assert!(
+            files.contains(&(target.to_string(), state)),
+            "{target} is not {state:?}: {files:?}"
+        );
+    }
+    let model = cx.read(|cx| view.read(cx).model().clone());
+    let steps: Vec<String> = cx.read(|cx| {
+        let snapshot = model.read(cx).snapshot().unwrap();
+        snapshot
+            .overview
+            .setup_steps
+            .iter()
+            .map(|s| s.target.clone())
+            .collect()
+    });
+    assert_eq!(steps, ["macos-defaults.sh"]);
+
+    // Its scripts only write to a log in the demo's home folder.
+    cx.update(|cx| {
+        model.update(cx, |model, cx| {
+            model.run_step("macos-defaults.sh".into(), cx)
+        })
+    });
+    cx.run_until_parked();
+    let log = fs::read_to_string(base.join("home/demo.log")).unwrap();
+    assert!(log.contains("KeyRepeat 2"), "{log}");
 }

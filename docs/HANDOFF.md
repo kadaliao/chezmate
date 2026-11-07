@@ -31,7 +31,7 @@
 
 之后用户又要求（2026-11-07）：加密文件不用再点「显示内容」，直接显示，上方标明同步时以加密形式保存即可；环境页的「打开配置」改成在页面下方用同样的编辑面板直接查看和编辑。已完成：`viewer.rs` 去掉 `Content::Hidden`，加密文件的「这台电脑」标签上方有一行带锁图标的说明；新增 `config.rs`（`ConfigPanel`：配置文件 + 源目录里的 `.chezmoi.<格式>.tmpl`，即 Core `Info::config_template`）；环境页改为中英双语。用户的真实配置就是由 `.chezmoi.toml.tmpl` 生成的，所以「这台电脑」标签会提示 `chezmoi init` 会覆盖直接改的内容。
 
-再之后（同日）：诊断运行后可以「复制给 Agent」（`environment.rs` 的 `agent_report`），发布为 v0.1.2。
+再之后（同日）：诊断运行后可以「复制给 Agent」（`environment.rs` 的 `agent_report`），发布为 v0.1.2。之后加了演示模式（`--demo`，`src/demo.rs`），想看界面在各种状态下的样子时用它，不要用真实配置。
 
 ## 3. 这次验证到的事实
 
