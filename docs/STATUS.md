@@ -12,6 +12,10 @@
 | 3 | Git：源仓库状态、提交、拉取、推送 | 完成 |
 | 4 | MCP 服务（`chezmate mcp`，stdio） | 完成 |
 
+## 下一步
+
+新手简化模型（以及是否脱离 chezmoi）见 [HANDOFF.md](HANDOFF.md)，在新会话中开始。
+
 ## 已实现（Core / CLI）
 
 | 操作 | Core | CLI | 测试 |
@@ -70,6 +74,8 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 - `--no-tty` 下遇到本地修改冲突时，chezmoi 输出 `… has changed since chezmoi last wrote it` 后以 EOF 失败，Core 识别为 `conflict`；
 - `forget` 不加 `--force` 会提示确认并失败；
 - `re-add` 静默跳过模板；
+- 没有 `once_` / `onchange_` 的 `run_` 脚本每次 apply 都运行，`status` 永远列出它；Core 标为 `runs_every_apply`，界面、CLI、MCP 不把它算作待处理；
+- `MM` 无法区分"只有本机改过"和"两边都改了"；可用 `chezmoi state dump` 中 `entryState` 的 `contentsSHA256` 与 `chezmoi cat` 的哈希比较区分（已在沙箱验证，尚未实现）；
 - chezmoi 拒绝添加位于其配置目录内的文件（测试沙箱据此布局）；
 - `.chezmoi.os` 使用 Go 的命名（`darwin`）。
 
