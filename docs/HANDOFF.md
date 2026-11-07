@@ -13,7 +13,7 @@
 
 ## 2. 现状（已完成、已提交）
 
-本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。2026-11-07 起推送到公开仓库 https://github.com/kadaliao/chezmate（`origin`），同日发布 v0.1.0、v0.1.1、v0.1.2 和 v0.1.3（GitHub Release 附 Apple Silicon 的 `Chezmate.app` 压缩包和命令行）。用户有 Apple 开发者账号：`scripts/package-macos.sh` 用钥匙串里的「Developer ID Application: Xingyi Liao (HMDAVG9B8J)」签名（hardened runtime），用户在 Mac mini 上存好的 notarytool 凭据名是 `chezmate-notary`（只在这台机器上）。发新版本：改 `Cargo.toml` 的 `workspace.package.version`，运行 `CHEZMATE_NOTARY_PROFILE=chezmate-notary scripts/package-macos.sh`，打 `v<版本>` 标签，`gh release create` 上传 `dist/` 里的 zip、tar.gz 和 `SHA256SUMS`。
+本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。2026-11-07 起推送到公开仓库 https://github.com/kadaliao/chezmate（`origin`），同日发布 v0.1.0 到 v0.1.4（GitHub Release 附 Apple Silicon 的 `Chezmate.app` 压缩包和命令行；v0.1.4 起应用里自带 chezmoi）。用户有 Apple 开发者账号：`scripts/package-macos.sh` 用钥匙串里的「Developer ID Application: Xingyi Liao (HMDAVG9B8J)」签名（hardened runtime），用户在 Mac mini 上存好的 notarytool 凭据名是 `chezmate-notary`（只在这台机器上）。发新版本：改 `Cargo.toml` 的 `workspace.package.version`，运行 `CHEZMATE_NOTARY_PROFILE=chezmate-notary scripts/package-macos.sh`，打 `v<版本>` 标签，`gh release create` 上传 `dist/` 里的 zip、tar.gz 和 `SHA256SUMS`。
 
 | 部分 | 内容 |
 | --- | --- |

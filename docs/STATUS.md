@@ -34,7 +34,7 @@
 
 测试：`chezmate-core/tests/setup.rs` 用两台沙箱电脑和本地裸仓库，覆盖新建 → 添加 → 连接 → 另一台取回（提交身份不写入配置）、模板提问（逗号和引号、漏答、文字由模板计算的问题）、`stdinIsATTY` 模板、已有配置时拒绝取回、跳过、失败的取回不留目录、远端已有内容被拒且不留 `origin`、不替换已有远端、源目录不是仓库、文件建议；单元测试覆盖模板解析、错误识别、`gh` 输出解析、自带 chezmoi 的查找顺序。GUI：无头窗口测试走完「第一台电脑」（开始 → 取消一个勾选 → 添加 → 粘贴地址上传 → 对话框关闭、远端有文件）和「第二台电脑」（错误地址的提示 → 正确地址 → 回答问题 → 概览显示待同步文件）以及缺少 chezmoi、源目录丢失时不显示欢迎页、有远端时不提示上传；`--test screenshots` 离屏截图检查了各个画面（中文、浅色，欢迎页另看了深色）。
 
-没有验证的：`gh repo create` 一键建库没有端到端测试（会在真实 GitHub 账号里建仓库），只测了参数和输出解析；没装 Xcode 命令行工具的 Mac 上 `/usr/bin/git` 只是一个会弹安装框的占位程序，Chezmate 目前不单独处理；发布脚本里下载、校验、签名自带 chezmoi 的步骤单独跑过，完整打包、公证留到下次发版。
+没有验证的：`gh repo create` 一键建库没有端到端测试（会在真实 GitHub 账号里建仓库），只测了参数和输出解析；没装 Xcode 命令行工具的 Mac 上 `/usr/bin/git` 只是一个会弹安装框的占位程序，Chezmate 目前不单独处理；2026-11-07 用 v0.1.4 的发布包验证过自带 chezmoi：解压发布的 zip，用 `sandbox-exec` 挡住 Homebrew 装的 chezmoi，在空的临时 HOME 里启动，欢迎页 → 开始 → 添加文件都正常，环境页显示用的是 `Chezmate.app/Contents/Helpers/chezmoi`；签名（Developer ID、hardened runtime）、公证和 Gatekeeper 检查都通过。注意：终端里如果设置了 `XDG_CONFIG_DIRS`，chezmoi 也会到那里找配置文件（从 Finder 启动没有这个问题）。
 
 ## 已实现（简化模型）
 

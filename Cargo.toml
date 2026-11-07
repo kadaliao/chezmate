@@ -4,7 +4,7 @@ members = ["crates/chezmate-core", "crates/chezmate-cli", "crates/chezmate-app"]
 default-members = ["crates/chezmate-core", "crates/chezmate-cli", "crates/chezmate-app"]
 
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kadaliao/chezmate"
