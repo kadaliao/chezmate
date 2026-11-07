@@ -158,6 +158,10 @@ fn explanation(file: &FileItem) -> String {
             ),
         },
         FileState::UpdateAvailable => match file.incoming {
+            Change::Added => tr(
+                "The shared version has this file and this computer does not, usually because it was added on another computer. Sync adds it here.",
+                "共享版本里有这个文件，这台电脑上还没有，通常是在另一台电脑上新加的。同步时会把它放到这台电脑上。",
+            ),
             Change::Deleted => tr(
                 "The shared version no longer has this file, usually because it was removed on another computer. Sync deletes it here too.",
                 "共享版本里已经没有这个文件，通常是在另一台电脑上删除的。同步时这台电脑上的也会删除。",
@@ -198,8 +202,8 @@ fn step_explanation(step: &SetupStep) -> &'static str {
             "每台电脑只运行一次的设置脚本，通常用来安装软件。同步时会运行它，可以先在下面看看它做什么。",
         ),
         _ => tr(
-            "This setup script changed, so it runs again. Sync runs it. Check what it does below.",
-            "这个设置脚本有变化，需要再运行一次。同步时会运行它，可以先在下面看看它做什么。",
+            "A setup script that runs again whenever it changes; it is new or has changed. Sync runs it. Check what it does below.",
+            "内容变化时会再次运行的设置脚本，它是新加的或有变化。同步时会运行它，可以先在下面看看它做什么。",
         ),
     }
 }
@@ -1052,7 +1056,7 @@ fn file_row(file: &FileItem, selected: bool, cx: &App) -> ListItem {
 fn step_row(step: &SetupStep, selected: bool, cx: &App) -> ListItem {
     let when = match step.runs {
         ScriptRuns::Once => tr("Runs once", "只运行一次"),
-        _ => tr("Changed, runs again", "有变化，再运行一次"),
+        _ => tr("New or changed", "新加的或有变化"),
     };
     row(
         Selection::Step(step.target.clone()).id(),
@@ -1188,7 +1192,7 @@ impl SyncReview {
         }
         if run > 0 {
             parts.push(tr(
-                format!("run {run} setup steps"),
+                plural(run, "run 1 setup step", "run {n} setup steps"),
                 format!("运行 {run} 个设置步骤"),
             ));
         }
@@ -1335,7 +1339,7 @@ impl Render for SyncReview {
         }
         div()
             .id("sync-review")
-            .max_h(px(320.))
+            .max_h(px(380.))
             .w_full()
             .child(body)
             .overflow_y_scrollbar()

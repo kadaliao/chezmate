@@ -11,6 +11,11 @@ publish = false
 name = "chezmate-app"
 path = "src/main.rs"
 
+# Off-screen screenshots for visual checks; see the file for how to run it.
+[[test]]
+name = "screenshots"
+harness = false
+
 [dependencies]
 chezmate-core.workspace = true
 gpui-kit.workspace = true

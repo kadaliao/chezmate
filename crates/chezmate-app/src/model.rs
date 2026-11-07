@@ -534,7 +534,11 @@ impl Dotfiles {
 
 fn decide_note(count: usize) -> String {
     tr(
-        format!(". {count} files need your decision."),
+        if count == 1 {
+            ". 1 file needs your decision.".to_string()
+        } else {
+            format!(". {count} files need your decision.")
+        },
         format!("。还有 {count} 个文件需要你决定。"),
     )
 }
@@ -559,7 +563,11 @@ fn describe_sync(outcome: &SyncOutcome) -> Result<String, String> {
     }
     if ran > 0 {
         parts.push(tr(
-            format!("ran {ran} setup steps"),
+            if ran == 1 {
+                "ran 1 setup step".to_string()
+            } else {
+                format!("ran {ran} setup steps")
+            },
             format!("运行 {ran} 个设置步骤"),
         ));
     }
