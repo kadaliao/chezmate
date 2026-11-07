@@ -142,4 +142,4 @@ claude mcp add chezmate -- chezmate mcp --read-only
 
 ## 许可
 
-MIT OR Apache-2.0
+双许可：[MIT](LICENSE-MIT) 或 [Apache-2.0](LICENSE-APACHE)，任选其一。
