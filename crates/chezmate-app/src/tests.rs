@@ -764,11 +764,11 @@ fn file_viewer(
     view: &Entity<Chezmate>,
     cx: &mut TestAppContext,
 ) -> Option<Entity<crate::viewer::FileViewer>> {
-    cx.read(|cx| view.read(cx).files().read(cx).viewer().cloned())
+    cx.read(|cx| view.read(cx).files().read(cx).viewer(cx).cloned())
 }
 
 #[gpui_kit::test]
-fn files_tree_opens_views_and_edits(cx: &mut TestAppContext) {
+fn files_tree_shows_contents_and_edits(cx: &mut TestAppContext) {
     use crate::viewer::{Content, ViewTab};
 
     let sb = Sandbox::new(&[
@@ -794,24 +794,16 @@ fn files_tree_opens_views_and_edits(cx: &mut TestAppContext) {
     .unwrap();
     click(cx, handle, &["dir:.config"]);
     click(cx, handle, &["dir:.config/nvim"]);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.click("file:.config/nvim/init.lua", cx);
+    click(cx, handle, &["file:.config/nvim/init.lua"]);
+    cx.read(|cx| {
         assert_eq!(
             view.read(cx).files().read(cx).selected(),
             Some(".config/nvim/init.lua")
         );
-        assert!(
-            view.read(cx).files().read(cx).viewer().is_none(),
-            "one click shows the details"
-        );
-        window.double_click("file:.config/nvim/init.lua", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    });
 
-    // Double-click opens the file read-only, as it is on this computer.
-    let viewer = file_viewer(&view, cx).expect("double-click opens the viewer");
+    // One click shows the file read-only, as it is on this computer.
+    let viewer = file_viewer(&view, cx).expect("a click shows the contents");
     cx.read(|cx| {
         let viewer = viewer.read(cx);
         assert_eq!(viewer.tab(), ViewTab::Here);
@@ -852,24 +844,19 @@ fn files_tree_opens_views_and_edits(cx: &mut TestAppContext) {
     cx.read(|cx| assert!(!viewer.read(cx).is_editing()));
 
     // A file with a pending change opens on its diff.
-    click(cx, handle, &["viewer-back"]);
     click(cx, handle, &["file:.zshrc"]);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.double_click("file:.zshrc", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
     cx.read(|cx| {
         let viewer = viewer.read(cx);
         assert_eq!(viewer.target(), ".zshrc");
         assert_eq!(viewer.tab(), ViewTab::Diff);
     });
 
+    // Folders and scripts have no contents to show.
+    click(cx, handle, &["dir:.config"]);
+    assert!(file_viewer(&view, cx).is_none());
+
     // A file made from a template is edited through its source.
-    click(cx, handle, &["viewer-back"]);
     click(cx, handle, &["file:.profile"]);
-    click(cx, handle, &["open-viewer"]);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("edit-file").disabled(), Some(true));
@@ -899,12 +886,7 @@ fn a_failed_save_shows_the_file_as_it_is(cx: &mut TestAppContext) {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
     let (handle, view) = open(cx, &sb);
     show(cx, &view, Page::Files);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.double_click("file:.hello", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
+    click(cx, handle, &["file:.hello"]);
     // The mode differs from the source, so the viewer opens on the diff.
     let viewer = file_viewer(&view, cx).unwrap();
     cx.update_window(handle, |_, window, cx| {
@@ -930,4 +912,57 @@ fn a_failed_save_shows_the_file_as_it_is(cx: &mut TestAppContext) {
         );
     });
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[gpui_kit::test]
+fn encrypted_files_show_their_contents_on_request(cx: &mut TestAppContext) {
+    use crate::viewer::Content;
+
+    let sb = Sandbox::new(&[]);
+    // chezmoi's built-in age, with a key made for this test only.
+    let config = sb.source.parent().unwrap().join("config");
+    let key = config.join("key.txt");
+    let keygen = std::process::Command::new(sb.chezmoi().binary())
+        .args(["age-keygen", "--output"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(keygen.status.success(), "{keygen:?}");
+    let recipient = fs::read_to_string(&key)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("# public key: ").map(str::to_string))
+        .unwrap();
+    fs::write(
+        config.join("chezmoi.toml"),
+        format!(
+            "encryption = \"age\"\n[age]\nidentity = {:?}\nrecipient = {recipient:?}\n",
+            key.display().to_string()
+        ),
+    )
+    .unwrap();
+    fs::write(sb.home.join(".netrc"), "machine example.com\n").unwrap();
+    sb.chezmoi()
+        .add(
+            &[sb.home.join(".netrc").display().to_string()],
+            &chezmate_core::AddOptions {
+                template: false,
+                encrypt: true,
+            },
+        )
+        .unwrap();
+
+    let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Files);
+    click(cx, handle, &["file:.netrc"]);
+    let viewer = file_viewer(&view, cx).expect("the file is selected");
+    cx.read(|cx| assert_eq!(viewer.read(cx).content(), &Content::Hidden));
+
+    click(cx, handle, &["show-contents"]);
+    cx.read(|cx| {
+        assert_eq!(
+            viewer.read(cx).content(),
+            &Content::Text("machine example.com\n".into())
+        );
+    });
 }

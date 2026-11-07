@@ -1,6 +1,6 @@
-//! The file viewer on the Files page: a file's contents on this computer,
-//! its source file, and its pending changes. Read-only until someone
-//! chooses to edit.
+//! The file viewer in the lower half of the Files page details: a file's
+//! contents on this computer, its source file, and its pending changes.
+//! Read-only until someone chooses to edit.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use chezmate_core::{EntryKind, ManagedEntry};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _,
     button::{Button, ButtonVariants as _},
     diff::{Diff, DiffMode, DiffState},
     h_flex,
@@ -19,9 +19,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FontWeight, IntoElement,
-    ObjectFit, ParentElement as _, Render, Styled as _, StyledImage as _, Subscription, Window,
-    div, img, prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Context, Entity, FontWeight, IntoElement, ObjectFit,
+    ParentElement as _, Render, Styled as _, StyledImage as _, Subscription, Window, div, img,
+    prelude::FluentBuilder as _,
 };
 
 use crate::i18n::tr;
@@ -47,6 +47,9 @@ pub enum Content {
     Link(PathBuf),
     /// The source file is encrypted; its ciphertext is not worth showing.
     Encrypted,
+    /// The decrypted file on this computer, shown only when asked: a click
+    /// on a file should not put a secret on screen.
+    Hidden,
     Folder,
     Failed(String),
 }
@@ -159,9 +162,6 @@ pub fn tabs_for(entry: &ManagedEntry, has_diff: bool) -> Vec<ViewTab> {
     tabs
 }
 
-/// Asks the Files page to go back to the file's details.
-pub struct CloseViewer;
-
 pub struct FileViewer {
     model: Entity<Dotfiles>,
     target: String,
@@ -177,10 +177,10 @@ pub struct FileViewer {
     diff: Entity<DiffState>,
     /// The snapshot the current tab was loaded from.
     loaded_for: Option<usize>,
+    /// The contents of an encrypted file were asked for.
+    revealed: bool,
     _subscriptions: Vec<Subscription>,
 }
-
-impl EventEmitter<CloseViewer> for FileViewer {}
 
 impl FileViewer {
     pub fn new(model: Entity<Dotfiles>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -216,6 +216,7 @@ impl FileViewer {
             dirty: false,
             diff,
             loaded_for: None,
+            revealed: false,
             _subscriptions: subscriptions,
         }
     }
@@ -261,8 +262,15 @@ impl FileViewer {
         self.target = target;
         self.editing = false;
         self.dirty = false;
+        self.revealed = false;
         self.tabs.clear();
         self.load(true, window, cx);
+    }
+
+    /// Shows the decrypted contents of an encrypted file.
+    pub fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.revealed = true;
+        self.load(false, window, cx);
     }
 
     /// Reads the file again after a refresh, unless it is being edited.
@@ -297,6 +305,12 @@ impl FileViewer {
         }
         let content = match self.tab {
             ViewTab::Diff => Content::Missing,
+            ViewTab::Here if entry.attributes.encrypted && !self.revealed => {
+                match fs::symlink_metadata(&entry.absolute) {
+                    Ok(_) => Content::Hidden,
+                    Err(_) => Content::Missing,
+                }
+            }
             ViewTab::Here => read_content(Path::new(&entry.absolute)),
             ViewTab::Source if entry.attributes.encrypted => Content::Encrypted,
             ViewTab::Source => read_content(Path::new(&entry.source_absolute)),
@@ -405,26 +419,19 @@ impl FileViewer {
         cx.notify();
     }
 
-    fn render_toolbar(&self, entry: &ManagedEntry, cx: &mut Context<Self>) -> AnyElement {
+    /// Edit, or Cancel and Save while editing; the layout switch on the
+    /// Changes tab.
+    fn render_actions(&self, entry: &ManagedEntry, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.model.read(cx).busy().is_some();
-        let (directory, name) = entry
-            .target
-            .rsplit_once('/')
-            .map_or(("", entry.target.as_str()), |(d, n)| (d, n));
-        let location = if directory.is_empty() {
-            "~".to_string()
-        } else {
-            format!("~/{directory}")
-        };
         let text_tab = matches!(self.tab, ViewTab::Here | ViewTab::Source)
             && matches!(self.content, Content::Text(_));
-        let actions = if self.editing {
+        if self.editing {
             h_flex()
-                .gap_2()
+                .gap_1()
                 .child(
                     Button::new("cancel-edit")
                         .ghost()
-                        .small()
+                        .xsmall()
                         .label(tr("Cancel", "取消"))
                         .on_click(
                             cx.listener(|this, _, window, cx| this.cancel_editing(window, cx)),
@@ -433,7 +440,7 @@ impl FileViewer {
                 .child(
                     Button::new("save-file")
                         .primary()
-                        .small()
+                        .xsmall()
                         .icon(Icon::new(Lucide::Save))
                         .label(tr("Save", "保存"))
                         .disabled(!self.dirty || busy)
@@ -443,8 +450,8 @@ impl FileViewer {
         } else if text_tab {
             let blocker = self.edit_blocker(entry);
             Button::new("edit-file")
-                .outline()
-                .small()
+                .ghost()
+                .xsmall()
                 .icon(Icon::new(Lucide::Pencil))
                 .label(tr("Edit", "编辑"))
                 .disabled(blocker.is_some() || busy)
@@ -455,7 +462,7 @@ impl FileViewer {
             let split = self.diff.read(cx).mode() == DiffMode::Split;
             Button::new("viewer-diff-mode")
                 .ghost()
-                .small()
+                .xsmall()
                 .label(if split {
                     tr("Unified", "合并显示")
                 } else {
@@ -472,57 +479,10 @@ impl FileViewer {
                 .into_any_element()
         } else {
             div().into_any_element()
-        };
-
-        h_flex()
-            .h_12()
-            .flex_none()
-            .gap_2()
-            .pl_2()
-            .pr_4()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("viewer-back")
-                    .ghost()
-                    .small()
-                    .icon(IconName::ArrowLeft)
-                    .tooltip(tr("Back to details", "返回信息"))
-                    .disabled(self.editing)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(CloseViewer))),
-            )
-            .child(
-                Icon::new(file_icon(entry))
-                    .small()
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_2()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(name.to_string()),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(location),
-                    ),
-            )
-            .child(actions)
-            .into_any_element()
+        }
     }
 
-    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_tabs(&self, entry: &ManagedEntry, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
         let info = match &self.content {
             Content::Text(text) if self.tab != ViewTab::Diff => {
@@ -556,71 +516,66 @@ impl FileViewer {
                     .map(|tab| Tab::new().label(tab.label()).disabled(editing)),
             )
             .suffix(
-                div()
-                    .px_3()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(info),
+                h_flex()
+                    .gap_3()
+                    .pr_3()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(info),
+                    )
+                    .child(self.render_actions(entry, cx)),
             )
             .into_any_element()
     }
 
-    /// One line on what the tab shows, or what saving an edit will do.
-    fn render_caption(&self, entry: &ManagedEntry, snapshot: &Snapshot, cx: &App) -> AnyElement {
-        let (text, tint) = if self.editing {
-            let text = match self.tab {
-                ViewTab::Source => tr(
-                    "Editing the source file. Once saved, this computer shows a new version; Sync applies it here and uploads it.",
-                    "正在编辑源文件。保存后这台电脑会显示「有新版本」，同步时会更新这台电脑并上传。",
-                ),
-                _ => tr(
-                    "Editing the file on this computer. Once saved, it shows as changed here; Sync saves it to the shared version.",
-                    "正在编辑这台电脑上的文件。保存后它会显示为「这台电脑上改过」，同步时存到共享版本。",
-                ),
-            };
-            (text.to_string(), true)
-        } else {
-            let text = match self.tab {
-                ViewTab::Here => tr(
-                    format!("On this computer: {}", entry.absolute),
-                    format!("这台电脑上的文件：{}", entry.absolute),
-                ),
-                ViewTab::Source if entry.attributes.template => tr(
-                    format!(
-                        "Source file {} · a template: each computer gets its own result",
-                        entry.source_relative
-                    ),
-                    format!(
-                        "源文件 {} · 模板：每台电脑按它生成自己的内容",
-                        entry.source_relative
-                    ),
-                ),
-                ViewTab::Source => tr(
-                    format!("Source file {}", entry.source_relative),
-                    format!("源文件 {}", entry.source_relative),
-                ),
-                ViewTab::Diff => diff_caption(snapshot.overview.file(&self.target)).to_string(),
-            };
-            (text, false)
+    /// What saving an edit will do, which colour is which in a diff, or
+    /// that a source file is a template. Nothing otherwise: the details
+    /// above already say where the file is.
+    fn render_caption(
+        &self,
+        entry: &ManagedEntry,
+        snapshot: &Snapshot,
+        cx: &App,
+    ) -> Option<AnyElement> {
+        let text = match self.tab {
+            ViewTab::Source if self.editing => tr(
+                "Editing the source file. Once saved, this computer shows a new version; Sync applies it here and uploads it.",
+                "正在编辑源文件。保存后这台电脑会显示「有新版本」，同步时会更新这台电脑并上传。",
+            ),
+            _ if self.editing => tr(
+                "Editing the file on this computer. Once saved, it shows as changed here; Sync saves it to the shared version.",
+                "正在编辑这台电脑上的文件。保存后它会显示为「这台电脑上改过」，同步时存到共享版本。",
+            ),
+            ViewTab::Diff => diff_caption(snapshot.overview.file(&self.target)),
+            ViewTab::Source if entry.attributes.template => tr(
+                "A template: each computer gets its own result.",
+                "这是模板：每台电脑按它生成自己的内容。",
+            ),
+            _ => return None,
         };
-        div()
-            .flex_none()
-            .px_4()
-            .py_1p5()
-            .text_xs()
-            .truncate()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .map(|this| {
-                if tint {
-                    this.bg(cx.theme().warning.opacity(0.12))
-                        .text_color(cx.theme().foreground)
-                } else {
-                    this.text_color(cx.theme().muted_foreground)
-                }
-            })
-            .child(text)
-            .into_any_element()
+        let editing = self.editing;
+        Some(
+            div()
+                .flex_none()
+                .px_4()
+                .py_1p5()
+                .text_xs()
+                .truncate()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .map(|this| {
+                    if editing {
+                        this.bg(cx.theme().warning.opacity(0.12))
+                            .text_color(cx.theme().foreground)
+                    } else {
+                        this.text_color(cx.theme().muted_foreground)
+                    }
+                })
+                .child(text)
+                .into_any_element(),
+        )
     }
 
     fn render_body(&self, entry: &ManagedEntry, cx: &mut Context<Self>) -> AnyElement {
@@ -726,6 +681,40 @@ impl FileViewer {
                 None,
                 cx,
             ),
+            Content::Hidden => v_flex()
+                .flex_1()
+                .min_h_0()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .p_8()
+                .child(icon_tile(Lucide::FileLock, cx))
+                .child(
+                    div()
+                        .text_base()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(tr("Encrypted file", "加密文件")),
+                )
+                .child(
+                    div()
+                        .max_w_96()
+                        .text_sm()
+                        .text_center()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(tr(
+                            "The shared version keeps it encrypted. The copy on this computer is decrypted, so it is shown only when you ask.",
+                            "共享版本里保存的是加密内容。这台电脑上的是解密后的文件，点了才显示。",
+                        )),
+                )
+                .child(
+                    Button::new("show-contents")
+                        .outline()
+                        .small()
+                        .icon(Icon::new(Lucide::Eye))
+                        .label(tr("Show Contents", "显示内容"))
+                        .on_click(cx.listener(|this, _, window, cx| this.reveal(window, cx))),
+                )
+                .into_any_element(),
             Content::Folder => placeholder(
                 Lucide::Folder,
                 tr("A folder", "这是一个文件夹"),
@@ -760,16 +749,7 @@ fn placeholder(
         .justify_center()
         .gap_3()
         .p_8()
-        .child(
-            div()
-                .size_12()
-                .rounded_xl()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(cx.theme().muted)
-                .child(Icon::new(icon).text_color(cx.theme().muted_foreground)),
-        )
+        .child(icon_tile(icon, cx))
         .child(
             div()
                 .text_base()
@@ -807,6 +787,24 @@ fn placeholder(
                     ),
             )
         })
+        .into_any_element()
+}
+
+/// An icon on a rounded, muted square.
+pub fn icon_tile(icon: Lucide, cx: &App) -> AnyElement {
+    div()
+        .flex_none()
+        .size_12()
+        .rounded_xl()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(cx.theme().muted)
+        .child(
+            Icon::new(icon)
+                .large()
+                .text_color(cx.theme().muted_foreground),
+        )
         .into_any_element()
 }
 
@@ -854,9 +852,8 @@ impl Render for FileViewer {
         v_flex()
             .size_full()
             .min_h_0()
-            .child(self.render_toolbar(&entry, cx))
-            .child(self.render_tabs(cx))
-            .child(self.render_caption(&entry, &snapshot, cx))
+            .child(self.render_tabs(&entry, cx))
+            .children(self.render_caption(&entry, &snapshot, cx))
             .child(self.render_body(&entry, cx))
             .into_any_element()
     }

@@ -300,7 +300,7 @@ fn main() {
     cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Changes, cx)));
     shoot(&mut cx, "advanced-changes");
 
-    // The Files page: the tree, a file's details and the viewer.
+    // The Files page: the tree, a file's details and its contents.
     let files = cx.update(|cx| view.read(cx).files().clone());
     cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Files, cx)));
     let reveal = |cx: &mut VisualTestAppContext, target: &str| {
@@ -309,9 +309,14 @@ fn main() {
         })
         .unwrap();
     };
-    let open = |cx: &mut VisualTestAppContext, tab: Option<viewer::ViewTab>| {
+    let tab = |cx: &mut VisualTestAppContext, tab: viewer::ViewTab| {
         cx.update_window(handle, |_, window, cx| {
-            files.update(cx, |files, cx| files.open(tab, window, cx));
+            let viewer = files
+                .read(cx)
+                .viewer(cx)
+                .cloned()
+                .expect("a file is selected");
+            viewer.update(cx, |viewer, cx| viewer.set_tab(tab, window, cx));
         })
         .unwrap();
     };
@@ -321,41 +326,36 @@ fn main() {
         reveal(&mut cx, ".local/bin/backup-notes");
         reveal(&mut cx, ".config/nvim/init.lua");
         shoot(&mut cx, &format!("files-details{suffix}"));
-        open(&mut cx, None);
-        shoot(&mut cx, &format!("files-viewer{suffix}"));
         if mode == ThemeMode::Dark {
             continue;
         }
         reveal(&mut cx, ".vimrc");
         shoot(&mut cx, "files-details-changed");
-        open(&mut cx, None);
-        shoot(&mut cx, "files-viewer-diff");
         reveal(&mut cx, ".gitconfig");
-        open(&mut cx, Some(viewer::ViewTab::Source));
-        shoot(&mut cx, "files-viewer-template-source");
+        tab(&mut cx, viewer::ViewTab::Source);
+        shoot(&mut cx, "files-template-source");
         reveal(&mut cx, ".local/bin/backup-notes");
-        open(&mut cx, None);
-        shoot(&mut cx, "files-viewer-script");
+        shoot(&mut cx, "files-script");
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.click("edit-file", cx);
             window.input("# edited\n", cx);
         })
         .unwrap();
-        shoot(&mut cx, "files-viewer-editing");
+        shoot(&mut cx, "files-editing");
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             window.click("cancel-edit", cx);
         })
         .unwrap();
         reveal(&mut cx, "Library/Application Support/Demo/logo.png");
-        open(&mut cx, None);
-        shoot(&mut cx, "files-viewer-image");
+        shoot(&mut cx, "files-image");
         reveal(&mut cx, "Library/Preferences/com.example.demo.plist");
-        open(&mut cx, None);
-        shoot(&mut cx, "files-viewer-binary");
+        shoot(&mut cx, "files-plist");
+        reveal(&mut cx, ".config");
+        shoot(&mut cx, "files-folder");
         reveal(&mut cx, "scripts:install-tools.sh");
-        shoot(&mut cx, "files-details-script");
+        shoot(&mut cx, "files-run-script");
     }
     cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
 

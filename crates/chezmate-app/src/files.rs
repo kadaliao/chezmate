@@ -1,6 +1,6 @@
 //! Files: every target chezmoi manages, laid out in the folders it lives in
-//! on this computer. Selecting one shows where it comes from; opening it
-//! (double-click or Open) shows its contents, its source and its changes.
+//! on this computer. Selecting one shows a few facts about it above and its
+//! contents, source and changes below.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,13 +13,11 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
-    description_list::DescriptionList,
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
     notification::NotificationType,
     resizable::{h_resizable, resizable_panel},
-    scroll::ScrollableElement as _,
     tag::Tag,
     tree::{TreeEvent, TreeItem, TreeState, tree},
     v_flex,
@@ -35,7 +33,7 @@ use crate::changes::{error_state, loading_state};
 use crate::i18n::tr;
 use crate::model::{Dotfiles, Snapshot};
 use crate::overview::{explanation, state_title};
-use crate::viewer::{CloseViewer, FileViewer, ViewTab, file_icon, human_size, tabs_for};
+use crate::viewer::{FileViewer, file_icon, human_size, icon_tile, tabs_for};
 
 /// Asks the shell to show a target on the Changes page.
 pub struct ReviewChange(pub String);
@@ -329,8 +327,6 @@ pub struct FilesView {
     selected: Option<String>,
     disk: Option<DiskInfo>,
     viewer: Entity<FileViewer>,
-    /// The viewer, rather than the details, fills the right side.
-    viewing: bool,
     _pick: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -346,7 +342,7 @@ impl FilesView {
         let subscriptions = vec![
             cx.observe_in(&model, window, |this, _, window, cx| {
                 this.rebuild(false, cx);
-                if this.viewing {
+                if this.viewer(cx).is_some() {
                     this.viewer
                         .update(cx, |viewer, cx| viewer.reload(window, cx));
                 }
@@ -374,10 +370,6 @@ impl FilesView {
                     this.select(id, window, cx);
                 }
             }),
-            cx.subscribe(&viewer, |this, _, _: &CloseViewer, cx| {
-                this.viewing = false;
-                cx.notify();
-            }),
         ];
         let mut this = Self {
             model,
@@ -391,7 +383,6 @@ impl FilesView {
             selected: None,
             disk: None,
             viewer,
-            viewing: false,
             _pick: Task::ready(()),
             _subscriptions: subscriptions,
         };
@@ -434,7 +425,6 @@ impl FilesView {
         });
         if !still_managed {
             self.selected = None;
-            self.viewing = false;
         }
         let selected = self.selected.clone();
         self.tree.update(cx, |tree, cx| {
@@ -469,18 +459,21 @@ impl FilesView {
         self.file_count
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn viewer(&self) -> Option<&Entity<FileViewer>> {
-        self.viewing.then_some(&self.viewer)
+    /// The viewer, when it shows the selected file.
+    pub fn viewer(&self, cx: &App) -> Option<&Entity<FileViewer>> {
+        let snapshot = self.snapshot(cx)?;
+        let entry = self.selected_entry(&snapshot)?;
+        (viewable(entry, &snapshot) && self.viewer.read(cx).target() == entry.target)
+            .then_some(&self.viewer)
     }
 
-    /// Selects a row and shows its details. While an edit is unsaved the
-    /// selection stays where it is.
+    /// Selects a row and shows its details and contents. While an edit is
+    /// unsaved the selection stays where it is.
     pub fn select(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.as_deref() == Some(id.as_str()) {
             return;
         }
-        if self.viewing && self.viewer.read(cx).has_unsaved_changes() {
+        if self.viewer.read(cx).has_unsaved_changes() {
             let current = self.selected.clone();
             self.tree.update(cx, |tree, cx| {
                 let ix = current.and_then(|id| tree.index_of(&id.into()));
@@ -503,9 +496,15 @@ impl FilesView {
                 .update(cx, |viewer, cx| viewer.cancel_editing(window, cx));
         }
         self.selected = Some(id);
-        self.viewing = false;
         if let Some(snapshot) = self.snapshot(cx) {
             self.read_disk(&snapshot);
+            if let Some(entry) = self.selected_entry(&snapshot)
+                && viewable(entry, &snapshot)
+            {
+                let target = entry.target.clone();
+                self.viewer
+                    .update(cx, |viewer, cx| viewer.open(target, window, cx));
+            }
         }
         cx.notify();
     }
@@ -533,47 +532,13 @@ impl FilesView {
         });
     }
 
-    /// Opens the selected file in the viewer, on `tab` if it has one.
-    pub fn open(&mut self, tab: Option<ViewTab>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(snapshot) = self.snapshot(cx) else {
-            return;
-        };
-        let Some(entry) = self.selected_entry(&snapshot) else {
-            return;
-        };
-        if tabs_for(entry, false).is_empty() && snapshot.review_diff(&entry.target).is_none() {
-            return;
-        }
-        let target = entry.target.clone();
-        self.viewer.update(cx, |viewer, cx| {
-            if viewer.target() != target || !viewer.is_editing() {
-                viewer.open(target, window, cx);
-            }
-            if let Some(tab) = tab {
-                viewer.set_tab(tab, window, cx);
-            }
-        });
-        self.viewing = true;
-        cx.notify();
-    }
-
-    fn clicked(
-        &mut self,
-        id: SharedString,
-        clicks: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn clicked(&mut self, id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
         // With an unsaved edit, the tree's own selection change puts the
         // selection back and says why.
-        if self.viewing && self.viewer.read(cx).has_unsaved_changes() {
+        if self.viewer.read(cx).has_unsaved_changes() {
             return;
         }
         self.select(id.to_string(), window, cx);
-        let is_file = self.rows.get(&id).is_some_and(|row| !row.folder);
-        if clicks >= 2 && is_file && self.selected.as_deref() == Some(id.as_ref()) {
-            self.open(None, window, cx);
-        }
     }
 
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
@@ -769,36 +734,46 @@ impl FilesView {
         };
         let busy = self.model.read(cx).busy().is_some();
         let folder = entry.kind == EntryKind::Directory;
-        let openable = !tabs_for(&entry, false).is_empty();
-        let attributes = attribute_labels(&entry);
-        let source = PathBuf::from(&entry.source_absolute);
         let target = PathBuf::from(&entry.absolute);
-        let (directory, name) = entry
-            .target
-            .rsplit_once('/')
-            .map_or(("", entry.target.as_str()), |(d, n)| (d, n));
-        let location = match (entry.kind, directory) {
-            (EntryKind::Script, _) => {
-                tr("Runs when chezmoi applies", "chezmoi 应用时运行").to_string()
-            }
-            (_, "") => "~".to_string(),
-            (_, directory) => format!("~/{directory}"),
+        let name = entry.target.rsplit('/').next().unwrap_or(&entry.target);
+        let location = match entry.kind {
+            EntryKind::Script => tr("Runs when chezmoi applies", "chezmoi 应用时运行").to_string(),
+            _ => format!("~/{}", entry.target),
         };
+        let kind = (entry.kind != EntryKind::File).then(|| kind_label(entry.kind));
 
         let header = h_flex()
-            .gap_4()
+            .gap_3()
             .child(icon_tile(file_icon(&entry), cx))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .gap_1()
+                    .gap_0p5()
                     .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(name.to_string()),
+                        h_flex()
+                            .min_w_0()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .child(name.to_string()),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .gap_1()
+                                    .child(status_tag(&entry, mark, snapshot))
+                                    .children(kind.map(|k| Tag::secondary().small().child(k)))
+                                    .children(
+                                        attribute_labels(&entry)
+                                            .into_iter()
+                                            .map(|label| Tag::secondary().small().child(label)),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -806,207 +781,153 @@ impl FilesView {
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
                             .child(location),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_1()
-                            .pt_1()
-                            .child(status_tag(&entry, mark, snapshot))
-                            .children(
-                                attributes
-                                    .iter()
-                                    .map(|label| Tag::secondary().small().child(*label)),
-                            ),
                     ),
             )
-            .when(openable, |this| {
-                this.child(
-                    Button::new("open-viewer")
-                        .primary()
-                        .small()
-                        .icon(Icon::new(Lucide::Eye))
-                        .label(tr("Open", "打开"))
-                        .tooltip(tr("Double-click a file to open it", "双击文件也可以打开"))
-                        .on_click(cx.listener(|this, _, window, cx| this.open(None, window, cx))),
-                )
-            });
-
-        let mut location_list = DescriptionList::new()
-            .columns(1)
-            .bordered(true)
-            .label_width(rems(7.));
-        if entry.kind != EntryKind::Script {
-            location_list =
-                location_list.item(tr("This computer", "这台电脑"), entry.absolute.clone(), 1);
-        }
-        location_list = location_list.item(
-            tr("Source file", "源文件"),
-            entry.source_relative.clone(),
-            1,
-        );
-
-        let mut file_list = DescriptionList::new()
-            .columns(1)
-            .bordered(true)
-            .label_width(rems(7.))
-            .item(tr("Type", "类型"), kind_label(entry.kind), 1);
-        if folder {
-            file_list = file_list.item(
-                tr("Contains", "包含"),
-                tr(format!("{files} files"), format!("{files} 个文件")),
-                1,
-            );
-        }
-        match (&self.disk, entry.kind) {
-            (_, EntryKind::Script) => {}
-            (Some(disk), _) => {
-                if !folder {
-                    file_list = file_list.item(tr("Size", "大小"), human_size(disk.size), 1);
-                }
-                if let Some(modified) = disk.modified {
-                    file_list = file_list.item(tr("Modified", "修改时间"), ago(modified), 1);
-                }
-                file_list = file_list.item(tr("Permissions", "权限"), permissions(disk.mode), 1);
-            }
-            (None, _) => {
-                file_list = file_list.item(
-                    tr("On this computer", "这台电脑上"),
-                    tr("Not yet", "还没有"),
-                    1,
-                );
-            }
-        }
-
-        let status = snapshot.overview.file(&entry.target).cloned();
-        let has_diff = snapshot.review_diff(&entry.target).is_some();
-        let actions = h_flex()
-            .gap_2()
-            .flex_wrap()
-            .when(target.exists(), |row| {
-                let target = target.clone();
-                row.child(
-                    Button::new("reveal-target")
-                        .outline()
-                        .small()
-                        .label(tr("Show in Finder", "在 Finder 中显示"))
-                        .on_click(move |_, _, cx| cx.reveal_path(&target)),
-                )
-            })
-            .child({
-                let source = source.clone();
-                // A folder or an encrypted file is not useful to open.
-                let reveal = folder || entry.attributes.encrypted;
-                Button::new("open-source")
-                    .outline()
-                    .small()
-                    .label(if reveal {
-                        tr("Show Source", "显示源文件")
-                    } else {
-                        tr("Open Source", "打开源文件")
-                    })
-                    .on_click(move |_, _, cx| {
-                        if reveal {
-                            cx.reveal_path(&source)
-                        } else {
-                            cx.open_with_system(&source)
-                        }
-                    })
-            })
-            .child(div().flex_1())
-            .child({
-                let entry = entry.clone();
-                Button::new("forget")
-                    .danger()
-                    .small()
-                    .label(tr("Stop Managing…", "停止管理…"))
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.forget(&entry, files, window, cx)
-                    }))
-            });
-
-        let pending = mark.is_some() && !folder;
-        let body = v_flex()
-            .p_5()
-            .gap_5()
-            .when(pending, |this| {
-                let title = match &status {
-                    Some(file) => state_title(file).to_string(),
-                    None => tr("Waiting to run", "等待运行").to_string(),
-                };
-                let text = match &status {
-                    Some(file) => explanation(file),
-                    None => tr(
-                        "This script runs at the next sync.",
-                        "下次同步时会运行这个脚本。",
-                    )
-                    .to_string(),
-                };
-                let target = entry.target.clone();
-                this.child(
-                    v_flex()
-                        .gap_2()
-                        .p_4()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(mark.map_or(cx.theme().border, |m| m.color(cx).opacity(0.4)))
-                        .bg(mark.map_or(cx.theme().muted, |m| m.color(cx).opacity(0.06)))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .size_2()
-                                        .rounded_full()
-                                        .bg(mark.map_or(cx.theme().info, |m| m.color(cx))),
-                                )
-                                .child(
-                                    div().text_sm().font_weight(FontWeight::MEDIUM).child(title),
-                                ),
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_0p5()
+                    .when(target.exists(), |row| {
+                        let target = target.clone();
+                        row.child(
+                            Button::new("reveal-target")
+                                .ghost()
+                                .small()
+                                .icon(Icon::new(Lucide::FolderSearch))
+                                .tooltip(tr("Show in Finder", "在 Finder 中显示"))
+                                .on_click(move |_, _, cx| cx.reveal_path(&target)),
                         )
-                        .child(div().text_sm().child(text))
+                    })
+                    .child({
+                        let entry = entry.clone();
+                        Button::new("forget")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(Lucide::Unlink))
+                            .tooltip(tr(
+                                "Stop managing… (the file stays on this computer)",
+                                "停止管理…（这台电脑上的文件会保留）",
+                            ))
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.forget(&entry, files, window, cx)
+                            }))
+                    }),
+            );
+
+        // A few facts, one line each.
+        let mut facts = vec![(tr("Source", "源文件"), entry.source_relative.clone())];
+        if entry.kind != EntryKind::Script {
+            let here = match &self.disk {
+                Some(disk) => {
+                    let mut parts = Vec::new();
+                    if !folder {
+                        parts.push(human_size(disk.size));
+                    }
+                    if let Some(modified) = disk.modified {
+                        parts.push(tr(
+                            format!("modified {}", ago(modified)),
+                            format!("{}修改", ago(modified)),
+                        ));
+                    }
+                    parts.push(permissions(disk.mode));
+                    parts.join(" · ")
+                }
+                None => tr("Not on this computer yet", "这台电脑上还没有").to_string(),
+            };
+            facts.push((tr("This computer", "这台电脑"), here));
+        }
+        let facts = v_flex()
+            .gap_1()
+            .children(facts.into_iter().map(|(label, value)| {
+                h_flex()
+                    .gap_3()
+                    .text_sm()
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(tr(rems(6.5), rems(4.)))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(label),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(value))
+            }));
+
+        let pending = mark.filter(|_| !folder).map(|mark| {
+            let status = snapshot.overview.file(&entry.target);
+            let title = match status {
+                Some(file) => state_title(file).to_string(),
+                None => tr("Waiting to run", "等待运行").to_string(),
+            };
+            let text = match status {
+                Some(file) => explanation(file),
+                None => tr(
+                    "This script runs at the next sync.",
+                    "下次同步时会运行这个脚本。",
+                )
+                .to_string(),
+            };
+            let target = entry.target.clone();
+            h_flex()
+                .flex_none()
+                .items_start()
+                .gap_3()
+                .px_5()
+                .py_2p5()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .bg(mark.color(cx).opacity(0.07))
+                .child(
+                    div()
+                        .flex_none()
+                        .mt(px(6.))
+                        .size_2()
+                        .rounded_full()
+                        .bg(mark.color(cx)),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(title))
                         .child(
-                            h_flex()
-                                .gap_2()
-                                .pt_1()
-                                .when(has_diff, |row| {
-                                    row.child(
-                                        Button::new("show-diff")
-                                            .outline()
-                                            .small()
-                                            .label(tr("See Changes", "查看差异"))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.open(Some(ViewTab::Diff), window, cx)
-                                            })),
-                                    )
-                                })
-                                .child(
-                                    Button::new("review-change")
-                                        .ghost()
-                                        .small()
-                                        .label(tr("Review in Changes", "在 Changes 页处理"))
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            cx.emit(ReviewChange(target.clone()))
-                                        })),
-                                ),
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(text),
                         ),
                 )
-            })
-            .child(section(
-                tr("Location", "位置"),
-                location_list.into_any_element(),
+                .child(
+                    Button::new("review-change")
+                        .ghost()
+                        .xsmall()
+                        .label(tr("Review in Changes", "在 Changes 页处理"))
+                        .on_click(
+                            cx.listener(move |_, _, _, cx| cx.emit(ReviewChange(target.clone()))),
+                        ),
+                )
+        });
+
+        let contents = if folder {
+            centered(
+                Lucide::Folder,
+                tr(
+                    format!("{files} managed files inside"),
+                    format!("里面有 {files} 个托管文件"),
+                ),
+                folder_summary(&entry.target, mark, snapshot),
                 cx,
-            ))
-            .child(section(
-                if folder {
-                    tr("Folder", "文件夹")
-                } else {
-                    tr("File", "文件")
-                },
-                file_list.into_any_element(),
-                cx,
-            ));
+            )
+        } else if viewable(&entry, snapshot) {
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(self.viewer.clone())
+                .into_any_element()
+        } else {
+            div().flex_1().into_any_element()
+        };
 
         v_flex()
             .size_full()
@@ -1014,23 +935,24 @@ impl FilesView {
             .child(
                 v_flex()
                     .flex_none()
-                    .gap_4()
-                    .p_5()
+                    .gap_3()
+                    .px_5()
+                    .pt_4()
+                    .pb_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(header)
-                    .child(actions),
+                    .child(facts),
             )
-            .child(
-                div()
-                    .id("file-details")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(body),
-            )
+            .children(pending)
+            .child(contents)
             .into_any_element()
     }
+}
+
+/// Whether the viewer has anything to show for an entry.
+fn viewable(entry: &ManagedEntry, snapshot: &Snapshot) -> bool {
+    !tabs_for(entry, snapshot.review_diff(&entry.target).is_some()).is_empty()
 }
 
 fn tree_row(
@@ -1077,10 +999,9 @@ fn tree_row(
         .min_w_0()
         .selected(selected)
         .accessibility_label(label)
-        .on_click(move |event, window, cx| {
+        .on_click(move |_, window, cx| {
             let id = id.clone();
-            let clicks = event.click_count();
-            let _ = owner.update(cx, |this, cx| this.clicked(id, clicks, window, cx));
+            let _ = owner.update(cx, |this, cx| this.clicked(id, window, cx));
         })
         .child(
             h_flex()
@@ -1179,37 +1100,6 @@ fn status_tag(entry: &ManagedEntry, mark: Option<Mark>, snapshot: &Snapshot) -> 
     }
 }
 
-fn icon_tile(icon: Lucide, cx: &App) -> AnyElement {
-    div()
-        .flex_none()
-        .size_12()
-        .rounded_xl()
-        .flex()
-        .items_center()
-        .justify_center()
-        .bg(cx.theme().muted)
-        .child(
-            Icon::new(icon)
-                .large()
-                .text_color(cx.theme().muted_foreground),
-        )
-        .into_any_element()
-}
-
-fn section(title: &str, content: AnyElement, cx: &App) -> AnyElement {
-    v_flex()
-        .gap_2()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(cx.theme().muted_foreground)
-                .child(title.to_string()),
-        )
-        .child(content)
-        .into_any_element()
-}
-
 fn centered(icon: Lucide, title: String, description: String, cx: &App) -> AnyElement {
     v_flex()
         .size_full()
@@ -1239,11 +1129,7 @@ fn empty_details(cx: &App) -> AnyElement {
     centered(
         Lucide::FolderTree,
         tr("Select a file", "选择一个文件").to_string(),
-        tr(
-            "See where it comes from. Double-click to open its contents.",
-            "查看它从哪里来。双击可以打开内容。",
-        )
-        .to_string(),
+        tr("See its details and contents.", "查看它的信息和内容。").to_string(),
         cx,
     )
 }
@@ -1261,6 +1147,24 @@ fn scripts_details(count: usize, cx: &App) -> AnyElement {
     )
 }
 
+/// How many of a folder's files changed, if any did.
+fn folder_summary(id: &str, mark: Option<Mark>, snapshot: &Snapshot) -> String {
+    if mark.is_none() {
+        return String::new();
+    }
+    let prefix = format!("{id}/");
+    let n = snapshot
+        .overview
+        .files
+        .iter()
+        .filter(|f| f.target.starts_with(&prefix))
+        .count();
+    tr(
+        format!("{n} of them changed."),
+        format!("其中 {n} 个有变化。"),
+    )
+}
+
 fn folder_details(
     id: &str,
     files: usize,
@@ -1268,28 +1172,16 @@ fn folder_details(
     snapshot: &Snapshot,
     cx: &App,
 ) -> AnyElement {
-    let changed = if mark.is_some() {
-        let prefix = format!("{id}/");
-        let n = snapshot
-            .overview
-            .files
-            .iter()
-            .filter(|f| f.target.starts_with(&prefix))
-            .count();
-        tr(
-            format!(" {n} of them changed."),
-            format!("其中 {n} 个有变化。"),
-        )
-    } else {
-        String::new()
-    };
+    let changed = folder_summary(id, mark, snapshot);
     centered(
         Lucide::Folder,
         format!("~/{id}"),
         tr(
-            format!("{files} managed files inside.{changed}"),
+            format!("{files} managed files inside. {changed}"),
             format!("里面有 {files} 个托管文件。{changed}"),
-        ),
+        )
+        .trim_end()
+        .to_string(),
         cx,
     )
 }
@@ -1304,14 +1196,7 @@ impl Render for FilesView {
             };
         };
         let rem = window.rem_size();
-        let right = if self.viewing {
-            div()
-                .size_full()
-                .child(self.viewer.clone())
-                .into_any_element()
-        } else {
-            self.render_details(&snapshot, cx)
-        };
+        let right = self.render_details(&snapshot, cx);
         h_resizable("files-panes")
             .child(
                 resizable_panel()

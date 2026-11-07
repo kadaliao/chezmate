@@ -19,11 +19,13 @@ gpui_kit::assets::icon_assets!(
         FileSymlink,
         FileTerminal,
         FileX,
+        FolderSearch,
         FolderTree,
         House,
         Lock,
         Pencil,
         Save,
+        Unlink,
     ]
 );
 
