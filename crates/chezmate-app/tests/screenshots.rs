@@ -436,6 +436,13 @@ fn main() {
     .unwrap();
     shoot(&mut cx, "environment-template");
 
+    // Diagnostics, with the button that copies them for an agent.
+    cx.update(|cx| {
+        let model = view.read(cx).model().clone();
+        model.update(cx, |model, cx| model.run_doctor(cx));
+    });
+    shoot(&mut cx, "environment-diagnostics");
+
     // Offline: the remote is gone.
     fs::remove_dir_all(base.join("remote.git")).unwrap();
     cx.update(|cx| {

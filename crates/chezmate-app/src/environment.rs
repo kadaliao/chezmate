@@ -1,15 +1,27 @@
 //! Environment: which chezmoi Chezmate uses, where its files are, its
 //! config file (shown and edited in place), and an on-demand
-//! `chezmoi doctor`.
+//! `chezmoi doctor` whose results can be copied for an agent.
 
-use chezmate_core::CheckResult;
+use std::fmt::Write as _;
+use std::path::Path;
+
+use chezmate_core::{CheckResult, Info};
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, alert::Alert, button::Button,
-    description_list::DescriptionList, h_flex, scroll::ScrollableElement as _, tag::Tag, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
+    alert::Alert,
+    button::{Button, ButtonVariants as _},
+    description_list::DescriptionList,
+    h_flex,
+    notification::NotificationType,
+    scroll::ScrollableElement as _,
+    tag::Tag,
+    v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window, div,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::changes::{error_state, loading_state};
@@ -38,6 +50,184 @@ impl EnvironmentView {
     pub fn config(&self) -> &Entity<ConfigPanel> {
         &self.config
     }
+
+    /// Puts the diagnostics on the clipboard, written for an agent.
+    fn copy_for_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let model = self.model.read(cx);
+        let Some(snapshot) = model.snapshot() else {
+            return;
+        };
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let Some(report) = agent_report(&snapshot.info, model.doctor(), home.as_deref()) else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(report));
+        window.push_notification(
+            (
+                NotificationType::Success,
+                SharedString::from(tr(
+                    "Copied. Paste it into Claude Code, Codex or another agent.",
+                    "已复制，可以粘贴给 Claude Code、Codex 等 Agent。",
+                )),
+            ),
+            cx,
+        );
+    }
+}
+
+/// chezmoi's own word for a result, as `chezmoi doctor` prints it.
+fn result_word(result: CheckResult) -> &'static str {
+    match result {
+        CheckResult::Ok => "ok",
+        CheckResult::Info => "info",
+        CheckResult::Warning => "warning",
+        CheckResult::Error => "error",
+        CheckResult::Failed => "failed",
+        CheckResult::Skipped => "skipped",
+        CheckResult::Unknown => "unknown",
+    }
+}
+
+/// What "Copy for Agent" puts on the clipboard: a request, which chezmoi
+/// and where its files are, what needs attention, and the full
+/// `chezmoi doctor` table. Paths in the home directory are written with
+/// `~`. `None` until diagnostics have run.
+pub fn agent_report(info: &Info, state: &DoctorState, home: Option<&Path>) -> Option<String> {
+    let home = home.and_then(Path::to_str).filter(|home| home.len() > 1);
+    let short = |text: &str| match home {
+        Some(home) => text.replace(home, "~"),
+        None => text.to_string(),
+    };
+    let path = |path: &Path| short(&path.display().to_string());
+
+    let mut s = String::new();
+    s.push_str(match state {
+        DoctorState::Done(_) => tr(
+            "Please look at this `chezmoi doctor` result from my computer: what needs fixing, and how? Before changing any config or file, tell me what you would change and why.",
+            "请帮我看看这份 `chezmoi doctor` 的结果：哪些需要处理、怎么处理？要改配置或文件之前，先告诉我改什么、为什么。",
+        ),
+        DoctorState::Failed(_) => tr(
+            "Running `chezmoi doctor --no-network` on my computer failed. Please help me find out why.",
+            "我在电脑上运行 `chezmoi doctor --no-network` 失败了，请帮我看看原因。",
+        ),
+        DoctorState::Idle | DoctorState::Running => return None,
+    });
+    s.push_str("\n\n");
+
+    let chezmate = env!("CARGO_PKG_VERSION");
+    let binary = path(&info.binary);
+    let _ = writeln!(
+        s,
+        "{}",
+        tr(
+            format!("- Chezmate {chezmate}, chezmoi {} ({binary})", info.version),
+            format!(
+                "- Chezmate {chezmate}，chezmoi {}（{binary}）",
+                info.version
+            ),
+        )
+    );
+    let source = path(&info.paths.source_dir);
+    let git = if info.source_is_git_repo {
+        tr(" (a Git repository)", "（Git 仓库）")
+    } else {
+        ""
+    };
+    let _ = writeln!(
+        s,
+        "{}",
+        tr(
+            format!("- Source directory: {source}{git}"),
+            format!("- 源目录：{source}{git}"),
+        )
+    );
+    let config = path(&info.paths.config_file);
+    let mut config_line = tr(
+        format!("- Config file: {config}"),
+        format!("- 配置文件：{config}"),
+    );
+    if !info.config_exists {
+        config_line.push_str(tr(" (not created)", "（尚未创建）"));
+    }
+    if let Some(template) = &info.config_template {
+        let template = path(template);
+        config_line.push_str(&tr(
+            format!(", made by `chezmoi init` from {template}"),
+            format!("，由 `chezmoi init` 按 {template} 生成"),
+        ));
+    }
+    let _ = writeln!(s, "{config_line}");
+    s.push('\n');
+
+    match state {
+        DoctorState::Done(checks) => {
+            let problems: Vec<_> = checks
+                .iter()
+                .filter(|c| {
+                    matches!(
+                        c.result,
+                        CheckResult::Warning | CheckResult::Error | CheckResult::Failed
+                    )
+                })
+                .collect();
+            if problems.is_empty() {
+                let _ = writeln!(s, "{}", tr("No warnings or errors.", "没有警告或错误。"));
+            } else {
+                let _ = writeln!(
+                    s,
+                    "{}",
+                    tr(
+                        format!("Needs attention ({}):", problems.len()),
+                        format!("需要注意（{} 项）：", problems.len()),
+                    )
+                );
+                for check in problems {
+                    let _ = writeln!(
+                        s,
+                        "- {} {}: {}",
+                        result_word(check.result),
+                        check.check,
+                        short(&check.message)
+                    );
+                }
+            }
+            let _ = writeln!(
+                s,
+                "\n{}\n```text",
+                tr(
+                    "Full output of `chezmoi doctor --no-network`:",
+                    "`chezmoi doctor --no-network` 的完整结果：",
+                )
+            );
+            let width = checks
+                .iter()
+                .map(|c| c.check.chars().count())
+                .chain(["CHECK".len()])
+                .max()
+                .unwrap_or_default();
+            let _ = writeln!(s, "{:<8} {:<width$}  MESSAGE", "RESULT", "CHECK");
+            for check in checks {
+                let line = format!(
+                    "{:<8} {:<width$}  {}",
+                    result_word(check.result),
+                    check.check,
+                    short(&check.message)
+                );
+                let _ = writeln!(s, "{}", line.trim_end());
+            }
+            s.push_str("```\n");
+        }
+        DoctorState::Failed(error) => {
+            let _ = writeln!(
+                s,
+                "{}\n```text\n{}\n```",
+                tr("Error:", "错误："),
+                short(error)
+            );
+        }
+        DoctorState::Idle | DoctorState::Running => {}
+    }
+    Some(s)
 }
 
 fn section_title(text: &'static str) -> impl IntoElement {
@@ -131,6 +321,10 @@ impl Render for EnvironmentView {
         };
         let info = &snapshot.info;
         let running = matches!(model.doctor(), DoctorState::Running);
+        let ran = matches!(
+            model.doctor(),
+            DoctorState::Done(_) | DoctorState::Failed(_)
+        );
         let doctor = render_doctor(model.doctor(), cx);
         let source = info.paths.source_dir.clone();
         // A refresh failed (for example after saving a config chezmoi cannot
@@ -213,6 +407,22 @@ impl Render for EnvironmentView {
                                     .gap_2()
                                     .child(section_title(tr("Diagnostics", "诊断")))
                                     .child(div().flex_1())
+                                    .when(ran, |row| {
+                                        row.child(
+                                            Button::new("copy-doctor")
+                                                .ghost()
+                                                .small()
+                                                .icon(Icon::new(Lucide::Copy))
+                                                .label(tr("Copy for Agent", "复制给 Agent"))
+                                                .tooltip(tr(
+                                                    "Copies the results with a short request, ready to paste into Claude Code, Codex or another agent. Paths in your home folder are written with ~.",
+                                                    "复制诊断结果和一段说明，可以直接粘贴给 Claude Code、Codex 等 Agent。家目录里的路径写成 ~。",
+                                                ))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.copy_for_agent(window, cx)
+                                                })),
+                                        )
+                                    })
                                     .child(
                                         Button::new("run-doctor")
                                             .outline()
@@ -237,5 +447,80 @@ impl Render for EnvironmentView {
             )
             .overflow_y_scrollbar()
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chezmate_core::{DoctorCheck, Paths};
+    use std::path::PathBuf;
+
+    fn info() -> Info {
+        Info {
+            binary: "/opt/homebrew/bin/chezmoi".into(),
+            version: "2.73.3".into(),
+            paths: Paths {
+                source_dir: "/Users/demo/.local/share/chezmoi".into(),
+                dest_dir: "/Users/demo".into(),
+                working_tree: "/Users/demo/.local/share/chezmoi".into(),
+                config_file: "/Users/demo/.config/chezmoi/chezmoi.toml".into(),
+            },
+            source_exists: true,
+            config_exists: true,
+            config_template: Some("/Users/demo/.local/share/chezmoi/.chezmoi.toml.tmpl".into()),
+            source_is_git_repo: true,
+        }
+    }
+
+    fn check(result: CheckResult, check: &str, message: &str) -> DoctorCheck {
+        DoctorCheck {
+            result,
+            check: check.into(),
+            message: message.into(),
+        }
+    }
+
+    #[test]
+    fn the_agent_report_is_ready_to_paste() {
+        let home = PathBuf::from("/Users/demo");
+        assert_eq!(agent_report(&info(), &DoctorState::Idle, Some(&home)), None);
+
+        let state = DoctorState::Done(vec![
+            check(CheckResult::Ok, "version", "v2.73.3"),
+            check(
+                CheckResult::Warning,
+                "suspicious-entries",
+                "/Users/demo/.local/share/chezmoi/dot_zshrc.orig",
+            ),
+            check(CheckResult::Info, "diff-command", ""),
+        ]);
+        let report = agent_report(&info(), &state, Some(&home)).unwrap();
+        assert!(!report.contains("/Users/demo"), "{report}");
+        assert!(report.contains("~/.local/share/chezmoi"), "{report}");
+        assert!(
+            report.contains("~/.local/share/chezmoi/.chezmoi.toml.tmpl"),
+            "{report}"
+        );
+        assert!(
+            report
+                .contains("- warning suspicious-entries: ~/.local/share/chezmoi/dot_zshrc.orig\n"),
+            "{report}"
+        );
+        assert!(
+            report.contains(concat!(
+                "```text\n",
+                "RESULT   CHECK               MESSAGE\n",
+                "ok       version             v2.73.3\n",
+                "warning  suspicious-entries  ~/.local/share/chezmoi/dot_zshrc.orig\n",
+                "info     diff-command\n",
+                "```\n",
+            )),
+            "{report}"
+        );
+
+        let failed = DoctorState::Failed("`chezmoi doctor` timed out after 30s".into());
+        let report = agent_report(&info(), &failed, Some(&home)).unwrap();
+        assert!(report.contains("```text\n`chezmoi doctor` timed out after 30s\n```"));
     }
 }

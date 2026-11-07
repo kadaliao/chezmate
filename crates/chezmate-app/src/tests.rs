@@ -244,6 +244,20 @@ fn environment_runs_diagnostics(cx: &mut TestAppContext) {
             _ => panic!("doctor did not finish"),
         }
     });
+
+    // The results can be copied, written for an agent.
+    click(cx, handle, &["copy-doctor"]);
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .expect("copied");
+    assert!(copied.contains("`chezmoi doctor"), "{copied}");
+    assert!(copied.contains("```text\nRESULT   CHECK"), "{copied}");
+    assert!(copied.contains("\nok       version "), "{copied}");
+    assert!(
+        copied.contains(&sb.source.display().to_string()),
+        "{copied}"
+    );
 }
 
 #[gpui_kit::test]

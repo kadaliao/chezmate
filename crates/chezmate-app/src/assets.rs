@@ -9,6 +9,7 @@ gpui_kit::assets::icon_assets!(
     [
         Braces,
         ChevronsDownUp,
+        Copy,
         FileCode,
         FileCog,
         FileDigit,
