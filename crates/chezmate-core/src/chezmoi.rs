@@ -369,8 +369,9 @@ impl Chezmoi {
         Ok(entries)
     }
 
-    /// `status` for every target, using an already loaded managed list.
-    pub(crate) fn status_with(&self, managed: &[ManagedEntry]) -> Result<Vec<StatusEntry>> {
+    /// [`Chezmoi::status`] for every target, using an already loaded
+    /// [`Chezmoi::managed`] list instead of reading it again.
+    pub fn status_with(&self, managed: &[ManagedEntry]) -> Result<Vec<StatusEntry>> {
         let mut entries = parse_status(&self.run(vec!["status".into()], Some(READ_TIMEOUT))?)?;
         mark_every_apply(&mut entries, managed);
         Ok(entries)

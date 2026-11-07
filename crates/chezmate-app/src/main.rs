@@ -2,7 +2,9 @@ mod app;
 mod changes;
 mod environment;
 mod files;
+mod i18n;
 mod model;
+mod overview;
 mod repository;
 
 use chezmate_core::ChezmoiOptions;
@@ -14,6 +16,7 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
+            i18n::init();
             app::init(cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),

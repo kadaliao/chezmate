@@ -14,6 +14,8 @@ use gpui_kit::{
 use tempfile::TempDir;
 
 use crate::app::{Chezmate, Page};
+use crate::overview::Selection;
+use chezmate_core::FileState;
 
 struct Sandbox {
     _root: TempDir,
@@ -86,6 +88,38 @@ fn open(cx: &mut TestAppContext, sandbox: &Sandbox) -> (AnyWindowHandle, Entity<
     opened
 }
 
+fn show(cx: &mut TestAppContext, view: &Entity<Chezmate>, page: Page) {
+    cx.update(|cx| view.update(cx, |view, cx| view.set_page(page, cx)));
+}
+
+/// (target, state) for every file on the Overview page.
+fn overview_files(view: &Entity<Chezmate>, cx: &mut TestAppContext) -> Vec<(String, FileState)> {
+    cx.read(|cx| {
+        let model = view.read(cx).model().read(cx);
+        assert!(model.error().is_none(), "load failed: {:?}", model.error());
+        model
+            .snapshot()
+            .expect("snapshot loaded")
+            .overview
+            .files
+            .iter()
+            .map(|f| (f.target.clone(), f.state))
+            .collect()
+    })
+}
+
+/// Clicks the elements with these IDs, in order, in one frame.
+fn click(cx: &mut TestAppContext, handle: AnyWindowHandle, ids: &[&str]) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        for id in ids {
+            window.click(SharedString::from(id.to_string()), cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 fn statuses(view: &Entity<Chezmate>, cx: &mut TestAppContext) -> Vec<String> {
     cx.read(|cx| {
         let model = view.read(cx).model().read(cx);
@@ -104,6 +138,7 @@ fn statuses(view: &Entity<Chezmate>, cx: &mut TestAppContext) -> Vec<String> {
 fn applies_a_new_file_from_the_list(cx: &mut TestAppContext) {
     let sb = Sandbox::new(&[("dot_hello", "hello\n"), ("dot_profile", "profile\n")]);
     let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Changes);
     assert_eq!(statuses(&view, cx), vec![".hello", ".profile"]);
 
     cx.update_window(handle, |_, window, cx| {
@@ -132,6 +167,7 @@ fn overwriting_local_edits_needs_confirmation(cx: &mut TestAppContext) {
     fs::write(sb.source.join("dot_hello"), "from dotfiles\n").unwrap();
 
     let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Changes);
     assert_eq!(statuses(&view, cx), vec![".hello"]);
 
     cx.update_window(handle, |_, window, cx| {
@@ -164,6 +200,7 @@ fn keep_local_saves_edits_to_the_source(cx: &mut TestAppContext) {
     fs::write(sb.home.join(".hello"), "my edit\n").unwrap();
 
     let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Changes);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.click("keep-local", cx);
@@ -441,6 +478,7 @@ fn every_apply_scripts_are_not_pending_changes(cx: &mut TestAppContext) {
     ]);
     sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
     let (handle, view) = open(cx, &sb);
+    show(cx, &view, Page::Changes);
     assert!(statuses(&view, cx).is_empty());
     cx.read(|cx| {
         let snapshot = view.read(cx).model().read(cx).snapshot().cloned().unwrap();
@@ -454,4 +492,189 @@ fn every_apply_scripts_are_not_pending_changes(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn overview_saves_a_change_made_here(cx: &mut TestAppContext) {
+    let sb = Sandbox::new(&[("dot_hello", "hello\n"), ("dot_profile", "profile\n")]);
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    fs::write(sb.home.join(".hello"), "my edit\n").unwrap();
+    fs::write(sb.source.join("dot_profile"), "profile v2\n").unwrap();
+
+    let (handle, view) = open(cx, &sb);
+    cx.read(|cx| assert_eq!(view.read(cx).page(), Page::Overview, "the home page"));
+    assert_eq!(
+        overview_files(&view, cx),
+        vec![
+            (".hello".into(), FileState::ChangedHere),
+            (".profile".into(), FileState::UpdateAvailable),
+        ]
+    );
+    cx.read(|cx| {
+        assert_eq!(
+            view.read(cx).overview().read(cx).selected(),
+            Some(&Selection::File(".hello".into()))
+        );
+    });
+
+    click(cx, handle, &["keep-here"]);
+    assert_eq!(
+        fs::read_to_string(sb.source.join("dot_hello")).unwrap(),
+        "my edit\n"
+    );
+    // Now only the update is left; it is selected.
+    click(cx, handle, &["item:.profile", "take-shared"]);
+    assert_eq!(sb.home(".profile"), "profile v2\n");
+    assert!(overview_files(&view, cx).is_empty());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("check-again").is_some(), "shows In sync");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn overview_decisions_ask_before_losing_work(cx: &mut TestAppContext) {
+    let sb = Sandbox::new(&[("dot_hello", "hello\n"), ("dot_gone", "gone\n")]);
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    fs::write(sb.home.join(".hello"), "mine\n").unwrap();
+    fs::write(sb.source.join("dot_hello"), "theirs\n").unwrap();
+    fs::remove_file(sb.home.join(".gone")).unwrap();
+
+    let (handle, view) = open(cx, &sb);
+    assert_eq!(
+        overview_files(&view, cx),
+        vec![
+            (".gone".into(), FileState::DeletedHere),
+            (".hello".into(), FileState::BothChanged),
+        ]
+    );
+    click(cx, handle, &["restore"]);
+    assert_eq!(sb.home(".gone"), "gone\n");
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("take-shared", cx);
+        assert!(window.has_active_dialog(cx), "replacing must ask first");
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        sb.home(".hello"),
+        "mine\n",
+        "nothing changes before confirming"
+    );
+    click(cx, handle, &["ok"]);
+    assert_eq!(sb.home(".hello"), "theirs\n");
+    assert!(overview_files(&view, cx).is_empty());
+}
+
+/// Two computers share a bare remote. The laptop changes a file and syncs;
+/// the desktop syncs, reviews the plan, unchecks one of its own changes,
+/// and confirms.
+#[gpui_kit::test]
+fn sync_brings_computers_together(cx: &mut TestAppContext) {
+    let mut desktop = Sandbox::new(&[]);
+    let base = desktop.home.parent().unwrap().to_path_buf();
+    let config = base.join("gitconfig");
+    fs::write(
+        &config,
+        "[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    let env = &mut desktop.options.env;
+    env.push(("GIT_CONFIG_GLOBAL".into(), config.clone().into()));
+    env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+    let remote = base.join("remote.git");
+    git(
+        &base,
+        &config,
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    let laptop = base.join("laptop");
+    git(
+        &base,
+        &config,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            laptop.to_str().unwrap(),
+        ],
+    );
+    for (name, contents) in [("dot_hello", "hello\n"), ("dot_a", "a\n"), ("dot_b", "b\n")] {
+        fs::write(laptop.join(name), contents).unwrap();
+    }
+    git(&laptop, &config, &["add", "-A"]);
+    git(&laptop, &config, &["commit", "-q", "-m", "Initial"]);
+    git(&laptop, &config, &["push", "-q", "origin", "main"]);
+    git(
+        &desktop.source,
+        &config,
+        &["clone", "-q", remote.to_str().unwrap(), "."],
+    );
+    desktop
+        .chezmoi()
+        .apply(&[], &ApplyOptions::default())
+        .unwrap();
+
+    // The laptop changes ~/.hello and uploads it; the desktop changes two
+    // files of its own.
+    fs::write(laptop.join("dot_hello"), "from laptop\n").unwrap();
+    git(&laptop, &config, &["commit", "-q", "-am", "Laptop"]);
+    git(&laptop, &config, &["push", "-q"]);
+    fs::write(desktop.home.join(".a"), "a from desktop\n").unwrap();
+    fs::write(desktop.home.join(".b"), "b, keep it here\n").unwrap();
+
+    let (handle, view) = open(cx, &desktop);
+    assert_eq!(
+        overview_files(&view, cx),
+        vec![
+            (".a".into(), FileState::ChangedHere),
+            (".b".into(), FileState::ChangedHere),
+        ],
+        "the laptop's change is not known before syncing"
+    );
+
+    // Step one pulls and opens the review; nothing on this computer changes.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("sync", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "the plan is shown first");
+        window.click(SharedString::from("save:.b"), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(desktop.home(".hello"), "hello\n");
+    assert_eq!(
+        fs::read_to_string(desktop.source.join("dot_hello")).unwrap(),
+        "from laptop\n",
+        "the shared version was pulled"
+    );
+
+    click(cx, handle, &["ok"]);
+    assert_eq!(desktop.home(".hello"), "from laptop\n");
+    assert_eq!(
+        fs::read_to_string(desktop.source.join("dot_a")).unwrap(),
+        "a from desktop\n"
+    );
+    assert_eq!(
+        fs::read_to_string(desktop.source.join("dot_b")).unwrap(),
+        "b\n",
+        "unchecked changes stay on this computer"
+    );
+    assert_eq!(
+        git(&remote, &config, &["show", "main:dot_a"]),
+        "a from desktop\n",
+        "uploaded"
+    );
+    assert_eq!(
+        overview_files(&view, cx),
+        vec![(".b".into(), FileState::ChangedHere)]
+    );
 }

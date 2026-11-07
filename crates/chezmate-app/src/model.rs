@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chezmate_core::{
-    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, Commit, DiffOptions, DoctorCheck, Info,
-    ManagedEntry, RepoStatus, StatusEntry,
+    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, Commit, DiffOptions, DoctorCheck, FileState,
+    Info, ManagedEntry, Overview, RepoStatus, StatusEntry, SyncOutcome, SyncPlan,
 };
 use gpui_kit::component::diff::{DiffFile, DiffParseOptions};
 use gpui_kit::{Context, EventEmitter, SharedString, Task};
+
+use crate::i18n::tr;
 
 /// Everything the Changes and Files pages show, read in one refresh.
 pub struct Snapshot {
@@ -26,6 +28,11 @@ pub struct Snapshot {
     pub diff_error: Option<String>,
     /// The source directory's git repository; `None` if it is not one.
     pub repo: Option<Result<Repo, String>>,
+    /// The simplified model shown on the Overview page.
+    pub overview: Overview,
+    /// Diffs from the shared version to this computer, for files changed
+    /// here: added lines are this computer's edits.
+    pub local_diffs: HashMap<SharedString, DiffFile>,
 }
 
 /// Local git state of the source directory (no network access).
@@ -47,6 +54,10 @@ impl Snapshot {
     pub fn diff(&self, target: &str) -> Option<&DiffFile> {
         self.diffs.get(target)
     }
+
+    pub fn local_diff(&self, target: &str) -> Option<&DiffFile> {
+        self.local_diffs.get(target)
+    }
 }
 
 /// The outcome of an operation, shown as a notification.
@@ -54,6 +65,9 @@ pub enum DotfilesEvent {
     Finished(Result<String, String>),
     /// A commit succeeded; the message input can be cleared.
     Committed,
+    /// The shared version is up to date; the sync runs once someone
+    /// confirms the plan made from this overview.
+    SyncReady(Arc<Overview>),
 }
 
 pub enum DoctorState {
@@ -174,6 +188,29 @@ impl Dotfiles {
         on_success: Option<DotfilesEvent>,
         cx: &mut Context<Self>,
     ) {
+        self.run_with(
+            label,
+            operation,
+            move |_, result, cx| {
+                let succeeded = result.is_ok();
+                cx.emit(DotfilesEvent::Finished(result));
+                if succeeded && let Some(event) = on_success {
+                    cx.emit(event);
+                }
+            },
+            cx,
+        );
+    }
+
+    /// Runs `operation` in the background, hands its result to `done`, then
+    /// refreshes. Ignored while another operation is running.
+    fn run_with<T: Send + 'static>(
+        &mut self,
+        label: impl Into<SharedString>,
+        operation: impl FnOnce(&Chezmoi) -> T + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let Ok(chezmoi) = self.chezmoi.clone() else {
             return;
         };
@@ -189,14 +226,149 @@ impl Dotfiles {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
-                let succeeded = result.is_ok();
-                cx.emit(DotfilesEvent::Finished(result));
-                if succeeded && let Some(event) = on_success {
-                    cx.emit(event);
-                }
+                done(this, result, cx);
                 this.refresh(cx);
             });
         });
+    }
+
+    /// Step one of a sync: brings the shared version up to date (fetch and
+    /// pull; nothing on this computer changes) and plans the sync. Emits
+    /// [`DotfilesEvent::SyncReady`] when there is something to confirm.
+    pub fn prepare_sync(&mut self, cx: &mut Context<Self>) {
+        self.run_with(
+            tr("Checking the shared version", "正在检查共享版本"),
+            |chezmoi| -> Result<(u32, Overview), String> {
+                let pulled = chezmoi.pull_shared().map_err(|err| err.to_string())?;
+                let overview = chezmoi.overview().map_err(|err| err.to_string())?;
+                Ok((pulled, overview))
+            },
+            |_, result, cx| match result {
+                Ok((pulled, overview)) => {
+                    let plan = SyncPlan::new(&overview, &[]);
+                    if !plan.is_empty() {
+                        cx.emit(DotfilesEvent::SyncReady(Arc::new(overview)));
+                        return;
+                    }
+                    let mut message = if pulled > 0 {
+                        tr(
+                            format!("Got {pulled} new commits; nothing to update on this computer"),
+                            format!("已获取 {pulled} 个新提交，这台电脑无需更新"),
+                        )
+                    } else {
+                        tr("Everything is in sync".to_string(), "已是最新".to_string())
+                    };
+                    if !plan.decide.is_empty() {
+                        message.push_str(&decide_note(plan.decide.len()));
+                    }
+                    cx.emit(DotfilesEvent::Finished(Ok(message)));
+                }
+                Err(err) => cx.emit(DotfilesEvent::Finished(Err(err))),
+            },
+            cx,
+        );
+    }
+
+    /// Step two: carries out a confirmed plan.
+    pub fn execute_sync(&mut self, plan: SyncPlan, cx: &mut Context<Self>) {
+        self.run(
+            tr("Syncing", "正在同步"),
+            move |chezmoi| {
+                let outcome = chezmoi.execute_sync(&plan).map_err(|err| err.to_string())?;
+                describe_sync(&outcome)
+            },
+            cx,
+        );
+    }
+
+    /// Saves this computer's version of a file to the shared version.
+    pub fn keep_here(&mut self, target: String, cx: &mut Context<Self>) {
+        self.run(
+            tr(format!("Saving ~/{target}"), format!("正在保存 ~/{target}")),
+            move |chezmoi| {
+                let outcome = chezmoi
+                    .re_add(std::slice::from_ref(&target))
+                    .map_err(|err| err.to_string())?;
+                if let Some(skipped) = outcome.skipped.first() {
+                    return Err(skipped.reason.clone());
+                }
+                Ok(tr(
+                    format!("Saved ~/{target} to the shared version. The next sync uploads it."),
+                    format!("已把 ~/{target} 存到共享版本，下次同步时上传"),
+                ))
+            },
+            cx,
+        );
+    }
+
+    /// Writes the shared version to this computer. `targets` must include
+    /// the directories that contain the file (see `Overview::apply_targets`);
+    /// `force` replaces changes made here.
+    pub fn take_shared(
+        &mut self,
+        target: String,
+        targets: Vec<String>,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.run(
+            tr(
+                format!("Updating ~/{target}"),
+                format!("正在更新 ~/{target}"),
+            ),
+            move |chezmoi| {
+                let options = ApplyOptions {
+                    force,
+                    ..Default::default()
+                };
+                chezmoi
+                    .apply(&targets, &options)
+                    .map(|_| {
+                        tr(
+                            format!("~/{target} now matches the shared version"),
+                            format!("~/{target} 已和共享版本一致"),
+                        )
+                    })
+                    .map_err(|err| err.to_string())
+            },
+            cx,
+        );
+    }
+
+    /// Stops syncing a file: removes it from the shared version only.
+    pub fn stop_syncing(&mut self, target: String, cx: &mut Context<Self>) {
+        self.run(
+            tr(
+                format!("Removing ~/{target}"),
+                format!("正在移除 ~/{target}"),
+            ),
+            move |chezmoi| {
+                chezmoi
+                    .forget(std::slice::from_ref(&target))
+                    .map(|_| {
+                        tr(
+                            format!("~/{target} is no longer synced. The next sync uploads this."),
+                            format!("~/{target} 不再同步，下次同步时上传这个改动"),
+                        )
+                    })
+                    .map_err(|err| err.to_string())
+            },
+            cx,
+        );
+    }
+
+    /// Runs one setup step now.
+    pub fn run_step(&mut self, target: String, cx: &mut Context<Self>) {
+        self.run(
+            tr(format!("Running {target}"), format!("正在运行 {target}")),
+            move |chezmoi| {
+                chezmoi
+                    .apply(std::slice::from_ref(&target), &ApplyOptions::default())
+                    .map(|_| tr(format!("Ran {target}"), format!("已运行 {target}")))
+                    .map_err(|err| err.to_string())
+            },
+            cx,
+        );
     }
 
     /// Applies `targets` (all when empty). `force` overwrites local edits.
@@ -360,6 +532,60 @@ impl Dotfiles {
     }
 }
 
+fn decide_note(count: usize) -> String {
+    tr(
+        format!(". {count} files need your decision."),
+        format!("。还有 {count} 个文件需要你决定。"),
+    )
+}
+
+/// The notification for a finished sync. A failed upload is an error: the
+/// work on this computer is done, but the other computers do not have it.
+fn describe_sync(outcome: &SyncOutcome) -> Result<String, String> {
+    let (saved, updated, ran) = (
+        outcome.saved.len(),
+        outcome.updated.len(),
+        outcome.ran.len(),
+    );
+    let mut parts = Vec::new();
+    if saved > 0 {
+        parts.push(tr(format!("saved {saved}"), format!("保存 {saved} 个")));
+    }
+    if updated > 0 {
+        parts.push(tr(
+            format!("updated {updated}"),
+            format!("更新 {updated} 个"),
+        ));
+    }
+    if ran > 0 {
+        parts.push(tr(
+            format!("ran {ran} setup steps"),
+            format!("运行 {ran} 个设置步骤"),
+        ));
+    }
+    if outcome.pushed {
+        parts.push(tr("uploaded".to_string(), "已上传".to_string()));
+    }
+    let mut message = if parts.is_empty() {
+        tr("Synced".to_string(), "同步完成".to_string())
+    } else {
+        tr(
+            format!("Synced: {}", parts.join(", ")),
+            format!("同步完成：{}", parts.join("、")),
+        )
+    };
+    if !outcome.decide.is_empty() {
+        message.push_str(&decide_note(outcome.decide.len()));
+    }
+    match &outcome.push_error {
+        Some(err) => Err(tr(
+            format!("{message}. Uploading failed, sync again later: {err}"),
+            format!("{message}。但上传失败，请稍后再同步一次：{err}"),
+        )),
+        None => Ok(message),
+    }
+}
+
 fn describe(verb: &str, targets: &[String]) -> String {
     match targets {
         [] => format!("{verb} all changes"),
@@ -376,12 +602,20 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
             info.paths.source_dir.display()
         ));
     }
-    let (status, every_apply): (Vec<_>, Vec<_>) = chezmoi
-        .status(&[])
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .partition(StatusEntry::is_pending);
     let managed = chezmoi.managed().map_err(|err| err.to_string())?;
+    let all_status = chezmoi
+        .status_with(&managed)
+        .map_err(|err| err.to_string())?;
+    let repo = info.source_is_git_repo.then(|| load_repo(chezmoi));
+    let repo_status = match &repo {
+        Some(Ok(repo)) => Some(&repo.status),
+        _ => None,
+    };
+    let overview = chezmoi
+        .overview_from(&all_status, &managed, repo_status)
+        .map_err(|err| err.to_string())?;
+    let (status, every_apply): (Vec<_>, Vec<_>) =
+        all_status.into_iter().partition(StatusEntry::is_pending);
     let managed_index = managed
         .iter()
         .enumerate()
@@ -409,7 +643,31 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
         }
     };
 
-    let repo = info.source_is_git_repo.then(|| load_repo(chezmoi));
+    let changed_here: Vec<String> = overview
+        .files
+        .iter()
+        .filter(|f| f.state == FileState::ChangedHere)
+        .map(|f| f.target.clone())
+        .collect();
+    let local_diffs = if changed_here.is_empty() {
+        HashMap::new()
+    } else {
+        let options = DiffOptions {
+            reverse: true,
+            ..Default::default()
+        };
+        chezmoi
+            .diff(&changed_here, &options)
+            .ok()
+            .and_then(|patch| DiffFile::parse_with(&patch, DiffParseOptions::new()).ok())
+            .map(|files| {
+                files
+                    .into_iter()
+                    .map(|file| (file.path().clone(), file))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     Ok(Snapshot {
         info,
@@ -420,6 +678,8 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
         diffs,
         diff_error,
         repo,
+        overview,
+        local_diffs,
     })
 }
 

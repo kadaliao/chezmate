@@ -19,7 +19,9 @@ use chezmate_core::ChezmoiOptions;
 use crate::changes::ChangesView;
 use crate::environment::EnvironmentView;
 use crate::files::{FilesView, ReviewChange};
+use crate::i18n::tr;
 use crate::model::{Dotfiles, DotfilesEvent};
+use crate::overview::{OverviewView, headline};
 use crate::repository::RepositoryView;
 
 gpui_kit::actions!(chezmate, [Refresh, Quit]);
@@ -38,13 +40,15 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.set_menus(vec![Menu {
         name: "Chezmate".into(),
-        items: vec![MenuItem::action("Quit Chezmate", Quit)],
+        items: vec![MenuItem::action(tr("Quit Chezmate", "退出 Chezmate"), Quit)],
         disabled: false,
     }]);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    /// The simplified model: the home page.
+    Overview,
     Changes,
     Files,
     Repository,
@@ -54,6 +58,7 @@ pub enum Page {
 pub struct Chezmate {
     model: Entity<Dotfiles>,
     page: Page,
+    overview: Entity<OverviewView>,
     changes: Entity<ChangesView>,
     files: Entity<FilesView>,
     repository: Entity<RepositoryView>,
@@ -64,6 +69,7 @@ pub struct Chezmate {
 impl Chezmate {
     pub fn new(options: ChezmoiOptions, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let model = cx.new(|cx| Dotfiles::new(options, cx));
+        let overview = cx.new(|cx| OverviewView::new(model.clone(), window, cx));
         let changes = cx.new(|cx| ChangesView::new(model.clone(), window, cx));
         let files = cx.new(|cx| FilesView::new(model.clone(), window, cx));
         let repository = cx.new(|cx| RepositoryView::new(model.clone(), window, cx));
@@ -96,10 +102,11 @@ impl Chezmate {
                 },
             ),
         ];
-        changes.update(cx, |changes, cx| changes.focus_list(window, cx));
+        overview.update(cx, |overview, cx| overview.focus_list(window, cx));
         Self {
             model,
-            page: Page::Changes,
+            page: Page::Overview,
+            overview,
             changes,
             files,
             repository,
@@ -111,6 +118,11 @@ impl Chezmate {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn model(&self) -> &Entity<Dotfiles> {
         &self.model
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn overview(&self) -> &Entity<OverviewView> {
+        &self.overview
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -135,11 +147,21 @@ impl Chezmate {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let owner = cx.entity().downgrade();
-        let changes = self
-            .model
-            .read(cx)
-            .snapshot()
-            .map(|snapshot| snapshot.status.len());
+        let snapshot = self.model.read(cx).snapshot();
+        let changes = snapshot.map(|snapshot| snapshot.status.len());
+        let pending = snapshot.map(|s| s.overview.files.len() + s.overview.setup_steps.len());
+        let count = |count: Option<usize>| {
+            move |item: SidebarMenuItem| {
+                item.when_some(count.filter(|count| *count > 0), |item, count| {
+                    item.suffix(move |_, cx| {
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(count.to_string())
+                    })
+                })
+            }
+        };
         let item = |label: &'static str, icon: IconName, page: Page| {
             let owner = owner.clone();
             SidebarMenuItem::new(label)
@@ -149,32 +171,31 @@ impl Chezmate {
                     let _ = owner.update(cx, |this, cx| this.set_page(page, cx));
                 })
         };
+        // The Overview is all most people need. The pages under Advanced show
+        // chezmoi's own concepts for those who know them.
         Sidebar::new("navigation")
             .collapsible(false)
             .child(
-                SidebarGroup::new("Dotfiles").child(
-                    SidebarMenu::new()
-                        .child(item("Changes", IconName::Inbox, Page::Changes).when_some(
-                            changes.filter(|count| *count > 0),
-                            |item, count| {
-                                item.suffix(move |_, cx| {
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(count.to_string())
-                                })
-                            },
-                        ))
-                        .child(item("Files", IconName::Folder, Page::Files))
-                        .child(item("Repository", IconName::Github, Page::Repository)),
-                ),
+                SidebarGroup::new(tr("Dotfiles", "配置文件")).child(SidebarMenu::new().child(
+                    count(pending)(item(
+                        tr("Overview", "概览"),
+                        IconName::LayoutDashboard,
+                        Page::Overview,
+                    )),
+                )),
             )
             .child(
-                SidebarGroup::new("chezmoi").child(SidebarMenu::new().child(item(
-                    "Environment",
-                    IconName::Settings2,
-                    Page::Environment,
-                ))),
+                SidebarGroup::new(tr("Advanced (chezmoi)", "高级（chezmoi）")).child(
+                    SidebarMenu::new()
+                        .child(count(changes)(item(
+                            "Changes",
+                            IconName::Inbox,
+                            Page::Changes,
+                        )))
+                        .child(item("Files", IconName::Folder, Page::Files))
+                        .child(item("Repository", IconName::Github, Page::Repository))
+                        .child(item("Environment", IconName::Settings2, Page::Environment)),
+                ),
             )
     }
 
@@ -183,13 +204,9 @@ impl Chezmate {
         let left: SharedString = if let Some(busy) = model.busy() {
             format!("{busy}…").into()
         } else if model.is_loading() {
-            "Reading chezmoi state…".into()
+            tr("Reading your files…", "正在读取…").into()
         } else if let Some(snapshot) = model.snapshot() {
-            match snapshot.status.len() {
-                0 => "Up to date".into(),
-                1 => "1 change to apply".into(),
-                n => format!("{n} changes to apply").into(),
-            }
+            headline(&snapshot.overview).into()
         } else {
             SharedString::default()
         };
@@ -219,6 +236,7 @@ impl Chezmate {
 impl Render for Chezmate {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let page: AnyView = match self.page {
+            Page::Overview => self.overview.clone().into(),
             Page::Changes => self.changes.clone().into(),
             Page::Files => self.files.clone().into(),
             Page::Repository => self.repository.clone().into(),
