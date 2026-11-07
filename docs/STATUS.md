@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 0 | Workspace、最小 GPUI Kit 窗口 | 完成 |
 | 1 | Core（真实 chezmoi 操作）+ CLI（`--json`） | 完成 |
-| 2 | GUI：变更列表、差异视图、应用 / 保留本地修改、托管文件、环境 | 完成（视觉效果待人工确认） |
+| 2 | GUI：变更列表、差异视图、应用 / 保留本地修改、托管文件、环境 | 完成 |
 | 3 | Git：源仓库状态、提交、拉取、推送 | 完成 |
 | 4 | MCP 服务（`chezmate mcp`，stdio） | 完成 |
 
@@ -77,6 +77,6 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 
 - 本机 `chezmoi doctor` 会卡在 1Password CLI 的 `op --version`（等待桌面端授权），Core 30 秒后终止整个进程组并返回 `timeout`；
 - 从 Finder 启动的应用 `PATH` 很短，Core 会为子进程补上 `/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等目录，以便 chezmoi 找到 gpg、git；
-- 开发期间屏幕锁定，GUI 的视觉效果（布局、间距、深浅色）尚未人工确认；交互逻辑由无头窗口测试验证，应用在真实配置下启动和加载正常；
+- GUI 已在 macOS 浅色模式下用真实配置截图检查四个页面（2026-11-07），并据此调整：普通目录不单独列出、列表行统一两行、Files 详情的操作移到信息下方、加密文件改为在 Finder 中显示源文件。深色模式、Linux、Windows 尚未检查；
 - 启用 GPUI Kit 的 `test-support` 后，`gpui-fast` 的精确版本要求与默认解析结果冲突（taffy 等），因此 Cargo.lock 以上游 gpui-kit v0.9.0 的锁文件为基础生成。升级 gpui-kit 时应同样参照上游锁文件；
 - 界面文字目前只有英文。

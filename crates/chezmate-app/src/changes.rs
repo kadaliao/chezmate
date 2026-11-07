@@ -619,15 +619,19 @@ fn change_row(
                         .flex_1()
                         .min_w_0()
                         .child(div().text_sm().truncate().child(name.to_string()))
-                        .when(!directory.is_empty(), |this| {
-                            this.child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(directory.to_string()),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .text_xs()
+                                .truncate()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if entry.is_script() {
+                                    "Script".to_string()
+                                } else if directory.is_empty() {
+                                    "~".to_string()
+                                } else {
+                                    format!("~/{directory}")
+                                }),
+                        ),
                 )
                 .when(entry.has_local_changes() && !entry.is_script(), |this| {
                     this.child(Tag::warning().xsmall().child("Edited"))

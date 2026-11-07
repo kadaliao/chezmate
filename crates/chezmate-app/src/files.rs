@@ -60,13 +60,21 @@ pub fn attribute_labels(entry: &ManagedEntry) -> Vec<&'static str> {
     .collect()
 }
 
-/// Indices of entries whose target or source path contains `query`
+/// Directories chezmoi manages only because they contain managed files.
+/// Every listed file already shows its folder, so these rows add nothing;
+/// directories with attributes (private, exact, …) stay listed.
+pub fn is_plain_directory(entry: &ManagedEntry) -> bool {
+    entry.kind == EntryKind::Directory && entry.attributes == Default::default()
+}
+
+/// Indices of listed entries whose target or source path contains `query`
 /// (case-insensitive).
 pub fn filter_entries(entries: &[ManagedEntry], query: &str) -> Vec<usize> {
     let query = query.trim().to_lowercase();
     entries
         .iter()
         .enumerate()
+        .filter(|(_, e)| !is_plain_directory(e))
         .filter(|(_, e)| {
             query.is_empty()
                 || e.target.to_lowercase().contains(&query)
@@ -229,7 +237,7 @@ impl FilesView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(snapshot.managed.len().to_string()),
+                            .child(count.to_string()),
                     )
                     .child(div().flex_1())
                     .child(
@@ -334,43 +342,7 @@ impl FilesView {
                             .font_weight(FontWeight::MEDIUM)
                             .truncate()
                             .child(entry.target.clone()),
-                    )
-                    .child({
-                        let source = source.clone();
-                        let is_dir = entry.kind == EntryKind::Directory;
-                        Button::new("open-source")
-                            .outline()
-                            .small()
-                            .label(if is_dir { "Show Source" } else { "Open Source" })
-                            .on_click(move |_, _, cx| {
-                                if is_dir {
-                                    cx.reveal_path(&source)
-                                } else {
-                                    cx.open_with_system(&source)
-                                }
-                            })
-                    })
-                    .when(target_exists, |row| {
-                        let target = target.clone();
-                        row.child(
-                            Button::new("reveal-target")
-                                .ghost()
-                                .small()
-                                .label("Show in Finder")
-                                .on_click(move |_, _, cx| cx.reveal_path(&target)),
-                        )
-                    })
-                    .child({
-                        let entry = entry.clone();
-                        Button::new("forget")
-                            .danger()
-                            .small()
-                            .label("Stop Managing…")
-                            .disabled(busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.forget(&entry, window, cx)
-                            }))
-                    }),
+                    ),
             )
             .child(
                 v_flex()
@@ -392,6 +364,49 @@ impl FilesView {
                                 },
                                 1,
                             ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child({
+                                let source = source.clone();
+                                // A directory or an encrypted file is not useful to open.
+                                let reveal = entry.kind == EntryKind::Directory
+                                    || entry.attributes.encrypted;
+                                Button::new("open-source")
+                                    .outline()
+                                    .small()
+                                    .label(if reveal { "Show Source" } else { "Open Source" })
+                                    .on_click(move |_, _, cx| {
+                                        if reveal {
+                                            cx.reveal_path(&source)
+                                        } else {
+                                            cx.open_with_system(&source)
+                                        }
+                                    })
+                            })
+                            .when(target_exists, |row| {
+                                let target = target.clone();
+                                row.child(
+                                    Button::new("reveal-target")
+                                        .outline()
+                                        .small()
+                                        .label("Show in Finder")
+                                        .on_click(move |_, _, cx| cx.reveal_path(&target)),
+                                )
+                            })
+                            .child(div().flex_1())
+                            .child({
+                                let entry = entry.clone();
+                                Button::new("forget")
+                                    .danger()
+                                    .small()
+                                    .label("Stop Managing…")
+                                    .disabled(busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.forget(&entry, window, cx)
+                                    }))
+                            }),
                     )
                     .when_some(pending, |this, _| {
                         let target = entry.target.clone();
@@ -452,15 +467,17 @@ fn file_row(entry: &ManagedEntry, selected: bool, pending: bool, cx: &App) -> Li
                         .flex_1()
                         .min_w_0()
                         .child(div().text_sm().truncate().child(name.to_string()))
-                        .when(!directory.is_empty(), |this| {
-                            this.child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(directory.to_string()),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .text_xs()
+                                .truncate()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if directory.is_empty() {
+                                    "~".to_string()
+                                } else {
+                                    format!("~/{directory}")
+                                }),
+                        ),
                 )
                 .when(pending, |this| {
                     this.child(Tag::info().xsmall().child("Changed"))
@@ -524,6 +541,20 @@ mod tests {
             entry(".config/nvim/init.lua", "dot_config/nvim/init.lua.tmpl"),
         ];
         assert_eq!(filter_entries(&entries, ""), vec![0, 1]);
+        let mut with_dirs = entries.clone();
+        with_dirs.push(entry(".config", "dot_config"));
+        let (kind, attributes) = classify("private_dot_ssh", true);
+        with_dirs.push(ManagedEntry {
+            kind,
+            attributes,
+            ..entry(".ssh", "private_dot_ssh")
+        });
+        with_dirs[2].kind = EntryKind::Directory;
+        assert_eq!(
+            filter_entries(&with_dirs, ""),
+            vec![0, 1, 3],
+            "plain folders are not listed"
+        );
         assert_eq!(filter_entries(&entries, "NVIM"), vec![1]);
         assert_eq!(filter_entries(&entries, "tmpl"), vec![1]);
         assert!(filter_entries(&entries, "fish").is_empty());

@@ -50,6 +50,15 @@ in `Entity<T>`, no async work or `cx.notify()` inside `render`, stable
 GPUI Kit component over a custom `div`; when none exists, build a small one
 on GPUI rather than adding another GUI framework.
 
+## Checking the UI by hand
+
+Screenshots: `screencapture -x -R x,y,w,h out.png`. AppleScript's
+`System Events … click at {x, y}` performs an accessibility press, not a
+mouse click: sidebar items react, list rows do not. Post real mouse events
+(a few lines of Swift with `CGEvent` `.leftMouseDown` / `.leftMouseUp`)
+instead. Only look at the real setup; never click Apply, Keep Local, Commit,
+Pull or Push there.
+
 ## Commands
 
 ```sh
