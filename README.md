@@ -46,9 +46,9 @@ Chezmate 不重新实现 chezmoi。所有操作都调用你机器上真实的 `c
 - `Chezmate-<版本>-macos-arm64.zip`：桌面应用，解压后拖进「应用程序」；
 - `chezmate-<版本>-macos-arm64.tar.gz`：命令行（含 MCP 服务器），解压后把 `chezmate` 放进 `PATH`。
 
-应用只做了临时签名，没有经过 Apple 公证，浏览器下载的文件第一次打开会被 macOS 拦下：到「系统设置 › 隐私与安全性」点「仍要打开」，或者运行 `xattr -dr com.apple.quarantine /Applications/Chezmate.app`（命令行同理）。
+应用和命令行都用 Developer ID 签名并经过 Apple 公证，下载后可以直接打开。
 
-自己打包：`scripts/package-macos.sh`，产物在 `dist/`。
+自己打包：`scripts/package-macos.sh`，产物在 `dist/`。钥匙串里有「Developer ID Application」证书时自动用它签名（也可以用 `CHEZMATE_SIGN_IDENTITY` 指定），否则临时签名；设置 `CHEZMATE_NOTARY_PROFILE=<notarytool 凭据名>`（用 `xcrun notarytool store-credentials` 存一次）时同时提交公证。
 
 ## 构建与运行
 
