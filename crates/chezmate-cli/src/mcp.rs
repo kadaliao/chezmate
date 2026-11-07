@@ -531,6 +531,7 @@ const TOOLS: &[Tool] = &[
                 } else {
                     vec![EntryType::Encrypted]
                 },
+                ..Default::default()
             };
             let diff = chezmoi.diff(&a.targets, &options)?;
             Ok(ToolOutput {

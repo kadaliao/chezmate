@@ -96,6 +96,9 @@ pub struct DiffOptions {
     /// Entry types to leave out, e.g. `Encrypted` to avoid showing decrypted
     /// secrets.
     pub exclude: Vec<EntryType>,
+    /// Diff from the target state to the destination instead: removed lines
+    /// are in the source state, added lines are on disk.
+    pub reverse: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,7 +125,7 @@ pub struct AddOptions {
     pub encrypt: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Skipped {
     pub target: String,
     pub reason: String,
@@ -231,10 +234,16 @@ impl Chezmoi {
 
     /// Runs chezmoi and returns stdout, turning a failure into an error.
     fn run(&self, args: Vec<OsString>, timeout: Option<Duration>) -> Result<String> {
+        self.run_captured(args, timeout)
+            .map(|captured| captured.stdout)
+    }
+
+    /// Like `run`, keeping the raw output.
+    fn run_captured(&self, args: Vec<OsString>, timeout: Option<Duration>) -> Result<Captured> {
         let display = self.display(&args);
         let captured = self.exec(args, timeout)?;
         if captured.success() {
-            return Ok(captured.stdout);
+            return Ok(captured);
         }
         let conflicts = conflict_paths(&captured);
         if !conflicts.is_empty() {
@@ -333,7 +342,7 @@ impl Chezmoi {
     }
 
     /// The target path relative to the destination, as `status` reports it.
-    fn relative_target(&self, dest: &Path, target: &str) -> Result<String> {
+    pub(crate) fn relative_target(&self, dest: &Path, target: &str) -> Result<String> {
         let absolute = self.absolute_target(dest, target)?;
         absolute
             .strip_prefix(dest)
@@ -355,15 +364,15 @@ impl Chezmoi {
         args.extend(self.target_args(targets)?);
         let mut entries = parse_status(&self.run(args, Some(READ_TIMEOUT))?)?;
         if entries.iter().any(StatusEntry::is_script) {
-            let always: HashMap<String, bool> = self
-                .managed()?
-                .into_iter()
-                .map(|m| (m.target.clone(), m.runs_every_apply()))
-                .collect();
-            for entry in entries.iter_mut().filter(|e| e.is_script()) {
-                entry.runs_every_apply = always.get(&entry.path).copied().unwrap_or(false);
-            }
+            mark_every_apply(&mut entries, &self.managed()?);
         }
+        Ok(entries)
+    }
+
+    /// `status` for every target, using an already loaded managed list.
+    pub(crate) fn status_with(&self, managed: &[ManagedEntry]) -> Result<Vec<StatusEntry>> {
+        let mut entries = parse_status(&self.run(vec!["status".into()], Some(READ_TIMEOUT))?)?;
+        mark_every_apply(&mut entries, managed);
         Ok(entries)
     }
 
@@ -379,6 +388,9 @@ impl Chezmoi {
     /// what `apply` would change.
     pub fn diff(&self, targets: &[String], options: &DiffOptions) -> Result<String> {
         let mut args: Vec<OsString> = vec!["diff".into(), "--use-builtin-diff".into()];
+        if options.reverse {
+            args.push("--reverse".into());
+        }
         push_types(&mut args, "--exclude", &options.exclude);
         args.extend(self.target_args(targets)?);
         self.run(args, Some(READ_TIMEOUT))
@@ -492,6 +504,24 @@ impl Chezmoi {
         self.run(args, Some(READ_TIMEOUT))
     }
 
+    /// Like [`Chezmoi::cat`], byte for byte (for hashing).
+    pub(crate) fn cat_bytes(&self, target: &str) -> Result<Vec<u8>> {
+        let mut args: Vec<OsString> = vec!["cat".into()];
+        args.extend(self.target_args(&[target.to_string()])?);
+        Ok(self.run_captured(args, Some(READ_TIMEOUT))?.stdout_bytes)
+    }
+
+    /// What chezmoi recorded when it last wrote each target, keyed by
+    /// absolute target path. Read from the persistent state, which holds
+    /// only types, modes and SHA-256 hashes, never contents.
+    pub(crate) fn last_written(&self) -> Result<HashMap<String, Written>> {
+        let args = ["state", "dump", "--format", "json"]
+            .map(OsString::from)
+            .to_vec();
+        let out = self.run(args, Some(READ_TIMEOUT))?;
+        parse_written(&out)
+    }
+
     /// The source file that produces `target`.
     pub fn source_path(&self, target: &str) -> Result<PathBuf> {
         let mut args: Vec<OsString> = vec!["source-path".into()];
@@ -528,6 +558,43 @@ impl Chezmoi {
     }
 }
 
+/// Marks scripts that chezmoi runs on every apply.
+fn mark_every_apply(entries: &mut [StatusEntry], managed: &[ManagedEntry]) {
+    let always: HashMap<&str, bool> = managed
+        .iter()
+        .map(|m| (m.target.as_str(), m.runs_every_apply()))
+        .collect();
+    for entry in entries.iter_mut().filter(|e| e.is_script()) {
+        entry.runs_every_apply = always.get(entry.path.as_str()).copied().unwrap_or(false);
+    }
+}
+
+/// One `entryState` record of chezmoi's persistent state.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct Written {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(rename = "contentsSHA256", default)]
+    pub contents_sha256: Option<String>,
+}
+
+fn parse_written(json: &str) -> Result<HashMap<String, Written>> {
+    #[derive(Deserialize)]
+    struct Dump {
+        #[serde(rename = "entryState", default)]
+        entry_state: HashMap<String, Written>,
+    }
+    if json.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    serde_json::from_str::<Dump>(json)
+        .map(|dump| dump.entry_state)
+        .map_err(|err| Error::Parse {
+            what: "chezmoi state dump",
+            message: err.to_string(),
+        })
+}
+
 fn push_types(args: &mut Vec<OsString>, flag: &str, types: &[EntryType]) {
     if !types.is_empty() {
         let value: Vec<&str> = types.iter().map(|t| t.flag_value()).collect();
@@ -562,6 +629,16 @@ fn conflict_paths(captured: &Captured) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_entry_state_only() {
+        let json = r#"{"configState":{},"entryState":{"/h/.a":{"type":"file","mode":420,"contentsSHA256":"abc"},"/h/.config":{"type":"dir","mode":493}},"scriptState":{"x":{"name":"s"}}}"#;
+        let written = parse_written(json).unwrap();
+        assert_eq!(written.len(), 2);
+        assert_eq!(written["/h/.a"].contents_sha256.as_deref(), Some("abc"));
+        assert_eq!(written["/h/.config"].kind, "dir");
+        assert!(parse_written("").unwrap().is_empty());
+    }
 
     #[test]
     fn parses_release_and_dev_versions() {

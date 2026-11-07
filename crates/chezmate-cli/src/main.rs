@@ -242,6 +242,7 @@ fn run(command: Command, args: ChezmoiArgs, out: &Output) -> Result<(), Error> {
                     .then_some(EntryType::Encrypted)
                     .into_iter()
                     .collect(),
+                ..Default::default()
             };
             let diff = chezmoi.diff(&targets, &options)?;
             out.data(&json!({ "diff": diff }), || diff.clone());

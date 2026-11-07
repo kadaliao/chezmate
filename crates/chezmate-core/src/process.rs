@@ -14,7 +14,10 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone)]
 pub struct Captured {
     pub status: ExitStatus,
+    /// Standard output decoded as UTF-8 (invalid sequences replaced).
     pub stdout: String,
+    /// Standard output exactly as the program wrote it.
+    pub stdout_bytes: Vec<u8>,
     pub stderr: String,
 }
 
@@ -161,13 +164,14 @@ pub fn run(mut command: Command, display: &str, timeout: Option<Duration>) -> Re
     let collect = |handle: Option<thread::JoinHandle<Vec<u8>>>| {
         handle
             .and_then(|handle| handle.join().ok())
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .unwrap_or_default()
     };
+    let stdout_bytes = collect(stdout);
     Ok(Captured {
         status,
-        stdout: collect(stdout),
-        stderr: collect(stderr),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stdout_bytes,
+        stderr: String::from_utf8_lossy(&collect(stderr)).into_owned(),
     })
 }
 

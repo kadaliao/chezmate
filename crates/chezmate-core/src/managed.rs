@@ -37,6 +37,10 @@ pub struct SourceAttributes {
     pub once: bool,
     /// `run_onchange_` scripts.
     pub onchange: bool,
+    /// `run_before_` scripts: run before files are updated.
+    pub before: bool,
+    /// `run_after_` scripts: run after files are updated.
+    pub after: bool,
 }
 
 /// A target managed by chezmoi.
@@ -155,8 +159,8 @@ pub fn classify(name: &str, is_dir: bool) -> (EntryKind, SourceAttributes) {
 type Apply = fn(&mut EntryKind, &mut SourceAttributes);
 
 const PREFIXES: &[(&str, Apply)] = &[
-    ("after_", |_, _| {}),
-    ("before_", |_, _| {}),
+    ("after_", |_, a| a.after = true),
+    ("before_", |_, a| a.before = true),
     ("create_", |_, a| a.create = true),
     ("empty_", |_, a| a.empty = true),
     ("encrypted_", |_, a| a.encrypted = true),
@@ -189,7 +193,8 @@ mod tests {
     fn decodes_scripts_and_symlinks() {
         let (kind, attrs) = classify("run_once_before_install.sh.tmpl", false);
         assert_eq!(kind, EntryKind::Script);
-        assert!(attrs.once && attrs.template);
+        assert!(attrs.once && attrs.template && attrs.before && !attrs.after);
+        assert!(classify("run_after_98-ensure.sh", false).1.after);
 
         assert_eq!(classify("symlink_dot_vimrc", false).0, EntryKind::Symlink);
         assert_eq!(classify("modify_dot_npmrc", false).0, EntryKind::Modify);
