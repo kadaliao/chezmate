@@ -338,28 +338,17 @@ impl Dotfiles {
         );
     }
 
-    /// Writes the shared version to this computer. `targets` must include
-    /// the directories that contain the file (see `Overview::apply_targets`);
-    /// `force` replaces changes made here.
-    pub fn take_shared(
-        &mut self,
-        target: String,
-        targets: Vec<String>,
-        force: bool,
-        cx: &mut Context<Self>,
-    ) {
+    /// Writes the shared version of one file to this computer, touching
+    /// nothing else. `force` replaces changes made here.
+    pub fn take_shared(&mut self, target: String, force: bool, cx: &mut Context<Self>) {
         self.run(
             tr(
                 format!("Updating ~/{target}"),
                 format!("正在更新 ~/{target}"),
             ),
             move |chezmoi| {
-                let options = ApplyOptions {
-                    force,
-                    ..Default::default()
-                };
                 chezmoi
-                    .apply(&targets, &options)
+                    .take_shared(std::slice::from_ref(&target), force)
                     .map(|_| {
                         tr(
                             format!("~/{target} now matches the shared version"),

@@ -108,6 +108,9 @@ pub struct ApplyOptions {
     /// Overwrite targets that were edited outside chezmoi.
     pub force: bool,
     pub exclude: Vec<EntryType>,
+    /// Apply a directory target itself (create it, fix its permissions)
+    /// without everything inside it. chezmoi recurses by default.
+    pub non_recursive: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -409,6 +412,9 @@ impl Chezmoi {
         }
         if options.force {
             args.push("--force".into());
+        }
+        if options.non_recursive {
+            args.push("--recursive=false".into());
         }
         push_types(&mut args, "--exclude", &options.exclude);
         args.extend(self.target_args(targets)?);

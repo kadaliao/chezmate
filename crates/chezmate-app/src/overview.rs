@@ -627,9 +627,6 @@ impl OverviewView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let target = file.target.clone();
-        let targets = snapshot
-            .overview
-            .apply_targets(std::slice::from_ref(&target));
         let mut row = h_flex().gap_2().flex_wrap();
 
         let keep_here = |label: &'static str, cx: &mut Context<Self>| {
@@ -647,14 +644,14 @@ impl OverviewView {
         };
         // Replaces this computer's version with the shared one, after asking.
         let replace = |label: &'static str, cx: &mut Context<Self>| {
-            let (target, targets) = (target.clone(), targets.clone());
+            let target = target.clone();
             Button::new("take-shared")
                 .outline()
                 .small()
                 .label(label)
                 .disabled(busy)
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    let (target, targets) = (target.clone(), targets.clone());
+                    let target = target.clone();
                     this.confirm(
                         (
                             tr(
@@ -668,9 +665,7 @@ impl OverviewView {
                             tr("Replace", "替换"),
                             ButtonVariant::Danger,
                         ),
-                        move |model, cx| {
-                            model.take_shared(target.clone(), targets.clone(), true, cx)
-                        },
+                        move |model, cx| model.take_shared(target.clone(), true, cx),
                         window,
                         cx,
                     );
@@ -714,7 +709,7 @@ impl OverviewView {
                 row = row.child(replace(tr("Use Shared Version…", "用共享版本…"), cx));
             }
             FileState::DeletedHere => {
-                let (restore_target, restore_targets) = (target.clone(), targets.clone());
+                let restore_target = target.clone();
                 let forget_target = target.clone();
                 row = row
                     .child(
@@ -724,9 +719,9 @@ impl OverviewView {
                             .label(tr("Restore", "恢复"))
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                let (t, ts) = (restore_target.clone(), restore_targets.clone());
+                                let target = restore_target.clone();
                                 this.model
-                                    .update(cx, |model, cx| model.take_shared(t, ts, true, cx));
+                                    .update(cx, |model, cx| model.take_shared(target, true, cx));
                             })),
                     )
                     .child(
@@ -768,11 +763,10 @@ impl OverviewView {
                         })
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            let (target, targets) = (target.clone(), targets.clone());
+                            let target = target.clone();
                             if !delete {
-                                this.model.update(cx, |model, cx| {
-                                    model.take_shared(target, targets, false, cx)
-                                });
+                                this.model
+                                    .update(cx, |model, cx| model.take_shared(target, false, cx));
                                 return;
                             }
                             this.confirm((
@@ -786,9 +780,7 @@ impl OverviewView {
                                 ),
                                 tr("Delete", "删除"),
                                 ButtonVariant::Danger),
-                                move |model, cx| {
-                                    model.take_shared(target.clone(), targets.clone(), false, cx)
-                                },
+                                move |model, cx| model.take_shared(target.clone(), false, cx),
                                 window,
                                 cx,
                             );
@@ -1211,22 +1203,45 @@ impl SyncReview {
                 "Nothing to do with the current selection.".to_string(),
                 "按当前的选择，没有需要做的事。".to_string(),
             ),
-            (true, true) => tr(
-                "Upload the shared version's changes.".to_string(),
-                "上传共享版本里的改动。".to_string(),
-            ),
+            (true, true) => {
+                let mut text = tr(
+                    "Upload the shared version's changes".to_string(),
+                    "上传共享版本里的改动".to_string(),
+                );
+                text.push_str(&self.other_changes_note());
+                text.push_str(tr(".", "。"));
+                text
+            }
             (false, upload) => {
                 let mut text = tr(
                     format!("This sync will {}", parts.join(", ")),
                     format!("这次同步会{}", parts.join("、")),
                 );
                 if upload {
-                    text.push_str(tr(", then upload.", "，然后上传。"));
+                    text.push_str(tr(", then upload", "，然后上传"));
+                    text.push_str(&self.other_changes_note());
+                    text.push_str(tr(".", "。"));
                 } else {
                     text.push_str(tr(".", "。"));
                 }
                 text
             }
+        }
+    }
+
+    /// Uploading commits everything in the source directory, not only the
+    /// files saved by this sync; say so when there is more.
+    fn other_changes_note(&self) -> String {
+        match self.overview().shared.as_ref().map_or(0, |s| s.uncommitted) {
+            0 => String::new(),
+            1 => tr(
+                " (with 1 other change already in the shared version)".to_string(),
+                "（包括共享版本里另外 1 处未上传的改动）".to_string(),
+            ),
+            n => tr(
+                format!(" (with {n} other changes already in the shared version)"),
+                format!("（包括共享版本里另外 {n} 处未上传的改动）"),
+            ),
         }
     }
 

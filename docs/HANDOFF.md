@@ -13,7 +13,7 @@
 
 ## 2. 现状（已完成、已提交）
 
-本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复。工作区干净，没有推送。
+本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。工作区干净，没有推送。
 
 | 部分 | 内容 |
 | --- | --- |
@@ -21,7 +21,7 @@
 | `chezmate-core/src/git.rs` | `pull` 现在会撤销 autostash 冲突；`is_pull_conflict` |
 | `chezmate-cli` | `chezmate overview`、`chezmate sync [--dry-run] [--skip T]`；MCP `sync_overview`、`sync`（共 17 个工具，原有 15 个不变） |
 | `chezmate-app` | `overview.rs`（概览页 + 同步确认 `SyncReview`）、`i18n.rs`（`tr(en, zh)`）、`model.rs`（`prepare_sync` / `execute_sync` / `keep_here` / `take_shared` / `stop_syncing` / `run_step`）、`tests/screenshots.rs` |
-| 测试 | 87 个，全部在沙箱里跑真实 chezmoi 和 git；核心场景用「两台电脑」（两个沙箱 HOME + 一个本地裸仓库） |
+| 测试 | 90 个，全部在沙箱里跑真实 chezmoi 和 git；核心场景用「两台电脑」（两个沙箱 HOME + 一个本地裸仓库） |
 
 设计细节和状态推导规则见 `docs/STATUS.md`「已实现（简化模型）」。
 
@@ -29,7 +29,7 @@
 
 - `MM` 用哈希区分：`chezmoi state dump --format json` 的 `entryState[<绝对路径>].contentsSHA256` vs `chezmoi cat` 输出的 sha256。符号链接的记录不含 `cat` 末尾的换行。
 - chezmoi 没写过、但已存在的不同文件：`status` 显示 ` M`，`apply` 直接覆盖不提示。Core 把它算作 `both_changed`（`never_synced`）。
-- 只 apply 新目录里的文件会失败，必须带上待创建的父目录（`Overview::apply_targets`）。
+- 只 apply 新目录里的文件会失败，必须带上待创建的父目录（`Overview::apply_targets`）；而 `chezmoi apply <目录>` 默认递归，会覆盖目录里的所有文件，所以一律加 `--recursive=false`（`ApplyOptions::non_recursive`、`Chezmoi::take_shared`）。新电脑上 `~/.config` 是 0700 这类情况很常见。
 - 指定目标 apply 时脚本按名字顺序运行，忽略 `before_` / `after_`。同步分三轮 apply。
 - `DA`（本机删除）恢复必须 `--force`。
 - `git pull --rebase --autostash` 放不回暂存改动时返回 0 并留下冲突标记。

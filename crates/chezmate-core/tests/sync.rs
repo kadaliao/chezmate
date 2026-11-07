@@ -410,3 +410,76 @@ fn a_shared_version_conflict_stops_the_sync_untouched() {
         "no conflict markers"
     );
 }
+
+/// Applying a directory recurses into it; a sync must only touch the files
+/// it lists, even when their folder needs fixing too.
+#[test]
+fn files_in_a_changed_folder_are_left_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new(&[
+        ("dot_config/fish/config.fish", "shared fish\n"),
+        ("dot_config/new/tool.toml", "tool\n"),
+    ]);
+    let fresh = world.computer(false);
+    fresh.write_home(".config/fish/config.fish", "my fish\n");
+    fs::set_permissions(
+        fresh.home.join(".config"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+
+    let outcome = sync(&fresh);
+    // The folder's permissions are fixed, and only that.
+    assert_eq!(outcome.updated, vec![".config", ".config/new/tool.toml"]);
+    assert_eq!(fresh.read_home(".config/new/tool.toml"), "tool\n");
+    assert_eq!(fresh.read_home(".config/fish/config.fish"), "my fish\n");
+    assert!(
+        outcome
+            .decide
+            .contains(&".config/fish/config.fish".to_string())
+    );
+}
+
+/// A folder whose permissions were changed here is shown, and replacing one
+/// file inside it with the shared version leaves its other files alone.
+#[test]
+fn replacing_one_file_leaves_its_neighbours_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new(&[("private_dot_ssh/a", "a\n"), ("private_dot_ssh/b", "b\n")]);
+    let laptop = world.computer(true);
+    fs::set_permissions(laptop.home.join(".ssh"), fs::Permissions::from_mode(0o755)).unwrap();
+    laptop.write_home(".ssh/a", "a edited\n");
+    laptop.write_home(".ssh/b", "b edited\n");
+
+    let overview = laptop.chezmoi.overview().unwrap();
+    let ssh = overview.file(".ssh").expect("the folder is listed");
+    assert_eq!(ssh.state, FileState::ChangedHere);
+    assert_eq!(ssh.cannot_save, Some(SaveBlocker::Directory));
+    assert!(ssh.needs_decision());
+
+    laptop
+        .chezmoi
+        .take_shared(&[".ssh/a".into()], true)
+        .unwrap();
+    assert_eq!(laptop.read_home(".ssh/a"), "a\n");
+    assert_eq!(laptop.read_home(".ssh/b"), "b edited\n");
+
+    // Saving the other file still works while the folder waits.
+    let outcome = sync(&laptop);
+    assert_eq!(outcome.saved, vec![".ssh/b"]);
+    assert_eq!(outcome.decide, vec![".ssh"]);
+}
+
+#[test]
+fn an_exact_folder_does_not_delete_files_it_never_wrote() {
+    let world = World::new(&[("exact_dot_tool/conf", "conf\n")]);
+    let fresh = world.computer(false);
+    fresh.write_home(".tool/notes", "my notes\n");
+    let overview = fresh.chezmoi.overview().unwrap();
+    let notes = overview.file(".tool/notes").unwrap();
+    assert_eq!(notes.state, FileState::BothChanged);
+    assert!(notes.never_synced);
+    sync(&fresh);
+    assert_eq!(fresh.read_home(".tool/notes"), "my notes\n");
+    assert_eq!(fresh.read_home(".tool/conf"), "conf\n");
+}

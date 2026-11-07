@@ -33,12 +33,12 @@
 | 状态 | 条件 |
 | --- | --- |
 | 这台电脑上改过 `changed_here` | 第一列为 M/A，且 `state dump` 里上次写入的哈希 == `chezmoi cat` 的哈希 |
-| 两边都改了 `both_changed` | 第一列为 M/A 且哈希不同；或第一列为空、第二列为 M、chezmoi 没有写入记录（文件或链接） |
+| 两边都改了 `both_changed` | 第一列为 M/A 且哈希不同；或第一列为空、chezmoi 没有写入记录，且第二列为 M（文件或链接）或 D（`exact_` 目录会删掉它；`remove_` 除外） |
 | 有新版本 `update_available` | 第一列为空，第二列为 A/M/D（除上一行） |
-| 这台电脑上删除了 `deleted_here` | 第一列为 D |
-| 不能自动保存 `cannot_save` | 模板、`modify_` / `remove_`、目录；本机改过时归入「需要你决定」 |
+| 这台电脑上删除了 `deleted_here` | 第一列为 D；或位于本机已删除的文件夹里的新文件 |
+| 不能自动保存 `cannot_save` | 模板、`modify_` / `remove_`、目录；本机改过时归入「需要你决定」。本机改过权限的文件夹作为单独一行显示 |
 
-同步的执行顺序：保存（re-add）→ 更新与设置步骤（分 `before_` / 普通 / `after_` 三轮 apply，自动带上待创建的父目录；有更新时才运行每次都运行的脚本）→ 有改动就提交 → 有远端就推送（失败只作为 `push_error` 报告）。每一项执行前都按当前状态重新检查，已经变化的跳过。
+同步的执行顺序：保存（re-add）→ 更新与设置步骤（分 `before_` / 普通 / `after_` 三轮 apply，`--recursive=false`，自动带上本机还不存在的父目录；有更新时才运行每次都运行的脚本）→ 有改动就提交 → 有远端就推送（失败只作为 `push_error` 报告）。每一项执行前都按当前状态重新检查，已经变化的跳过。
 
 ## 已实现（Core / CLI）
 
@@ -102,6 +102,8 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 - `MM` 无法区分"只有本机改过"和"两边都改了"；用 `chezmoi state dump` 中 `entryState` 的 `contentsSHA256` 与 `chezmoi cat` 的哈希比较区分（符号链接的记录不含 `cat` 输出末尾的换行）；
 - chezmoi 从没写过、但已存在且内容不同的文件，`status` 只显示 ` M`，`apply` 会不提示直接覆盖；
 - 只 apply 新目录里的文件会失败（父目录不存在），必须连同待创建的父目录一起 apply；
+- `chezmoi apply <目录>` 默认递归，会覆盖目录里所有文件（包括本机改过的）；同步和概览页的单文件操作一律用 `--recursive=false`，只带上本机不存在的父目录；
+- `exact_` 目录里 chezmoi 没写过的本机文件，`status` 显示 ` D`，apply 会直接删除；
 - 指定目标 apply 时，chezmoi 按名字顺序运行脚本，忽略 `before_` / `after_`；完整 apply 才遵守；
 - 本机删除的文件（`DA`）不加 `--force` 无法恢复（chezmoi 认为它在外部被改过）；
 - `git pull --rebase --autostash` 在暂存的改动放不回去时返回成功，但留下冲突标记；Core 检测到后撤销拉取并恢复改动；

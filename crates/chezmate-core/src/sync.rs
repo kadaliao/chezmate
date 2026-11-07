@@ -83,6 +83,16 @@ impl FileItem {
     pub fn can_save(&self) -> bool {
         self.cannot_save.is_none() && self.state != FileState::DeletedHere
     }
+
+    /// A directory that is missing here, so the files in it can only be
+    /// written after it.
+    fn must_exist_first(&self) -> bool {
+        match self.state {
+            FileState::UpdateAvailable => self.incoming == Change::Added,
+            FileState::DeletedHere => true,
+            _ => false,
+        }
+    }
 }
 
 /// When chezmoi runs a script.
@@ -209,15 +219,17 @@ impl Overview {
         self.files.iter().filter(|f| f.needs_decision())
     }
 
-    /// `targets` plus the listed directories that contain them. chezmoi
-    /// cannot write a file into a directory it has not created yet, so
-    /// those directories must be applied in the same run.
+    /// `targets` plus the directories containing them that do not exist on
+    /// this computer yet (new, or deleted here). chezmoi cannot write a file
+    /// into a missing directory, so those must be applied in the same run,
+    /// and without recursing: applying a directory recursively would also
+    /// overwrite every other file in it.
     pub fn apply_targets(&self, targets: &[String]) -> Vec<String> {
         let directories: Vec<&str> = self
             .directories
             .iter()
             .chain(&self.files)
-            .filter(|item| item.kind == EntryKind::Directory)
+            .filter(|item| item.kind == EntryKind::Directory && item.must_exist_first())
             .map(|item| item.target.as_str())
             .collect();
         let mut all = BTreeSet::new();
@@ -357,10 +369,15 @@ fn file_state(entry: &StatusEntry, since: Since, kind: EntryKind) -> (FileState,
         Change::Deleted => (FileState::DeletedHere, false),
         Change::None => {
             // chezmoi reports a file it never wrote as only needing an
-            // update, and apply then overwrites it without asking.
+            // update (or, in an `exact_` directory, a deletion), and apply
+            // then overwrites or deletes it without asking.
             let own_version = since == Since::NeverWritten
-                && entry.apply == Change::Modified
-                && matches!(kind, EntryKind::File | EntryKind::Symlink);
+                && match entry.apply {
+                    Change::Modified => matches!(kind, EntryKind::File | EntryKind::Symlink),
+                    // `remove_` entries are meant to delete what is there.
+                    Change::Deleted => kind != EntryKind::Remove,
+                    _ => false,
+                };
             if own_version {
                 (FileState::BothChanged, true)
             } else {
@@ -470,8 +487,25 @@ impl Chezmoi {
                 never_synced,
             });
         }
+        // A new file in a folder deleted here is part of that deletion.
+        let deleted_dirs: Vec<String> = items
+            .iter()
+            .filter(|i| i.kind == EntryKind::Directory && i.state == FileState::DeletedHere)
+            .map(|i| i.target.clone())
+            .collect();
+        for item in &mut items {
+            if item.state == FileState::UpdateAvailable
+                && deleted_dirs.iter().any(|dir| is_inside(&item.target, dir))
+            {
+                item.state = FileState::DeletedHere;
+            }
+        }
+        // A directory that is created or restored along with files listed
+        // inside it is not shown on its own. One changed here is: it needs
+        // a decision.
         let (directories, files): (Vec<_>, Vec<_>) = items.iter().cloned().partition(|item| {
             item.kind == EntryKind::Directory
+                && item.must_exist_first()
                 && items
                     .iter()
                     .any(|other| is_inside(&other.target, &item.target))
@@ -484,6 +518,11 @@ impl Chezmoi {
     /// Whether the shared version still renders to what chezmoi last wrote
     /// to a target that was changed on this computer.
     fn compare(&self, entry: &StatusEntry, kind: EntryKind, record: &Written) -> Since {
+        if kind == EntryKind::Directory {
+            // Only its permissions can change here. Shown as changed here
+            // (it cannot be saved, so it needs a decision either way).
+            return Since::Unchanged;
+        }
         let Some(expected) = &record.contents_sha256 else {
             return Since::Changed;
         };
@@ -539,6 +578,19 @@ impl Chezmoi {
             self.git()?.pull()?;
         }
         Ok(behind)
+    }
+
+    /// Writes the shared version of `targets` to this computer, creating
+    /// missing directories they are in but touching nothing else in them.
+    /// `force` replaces changes made here.
+    pub fn take_shared(&self, targets: &[String], force: bool) -> Result<()> {
+        let targets = self.overview()?.apply_targets(targets);
+        let options = ApplyOptions {
+            force,
+            non_recursive: true,
+            ..Default::default()
+        };
+        self.apply(&targets, &options).map(drop)
     }
 
     /// Carries out a plan. Every item is checked against the current state
@@ -612,9 +664,13 @@ impl Chezmoi {
             for script in scripts {
                 rounds[script.order as usize].push(script.target.clone());
             }
+            let options = ApplyOptions {
+                non_recursive: true,
+                ..Default::default()
+            };
             for round in rounds.iter_mut().filter(|r| !r.is_empty()) {
                 round.sort();
-                self.apply(round, &ApplyOptions::default())?;
+                self.apply(round, &options)?;
             }
         }
         outcome.updated = update;
@@ -754,6 +810,20 @@ mod tests {
             state(Deleted, Added, Since::Unchanged),
             (FileState::DeletedHere, false)
         );
+        // A file chezmoi never wrote, which an `exact_` directory would delete.
+        assert_eq!(
+            state(None, Deleted, Since::NeverWritten),
+            (FileState::BothChanged, true)
+        );
+        assert_eq!(
+            file_state(
+                &entry(".old", None, Deleted),
+                Since::NeverWritten,
+                EntryKind::Remove
+            ),
+            (FileState::UpdateAvailable, false),
+            "remove_ is meant to delete"
+        );
         // A directory chezmoi never wrote only gets its permissions fixed.
         assert_eq!(
             file_state(
@@ -806,25 +876,26 @@ mod tests {
     }
 
     #[test]
-    fn apply_targets_include_containing_directories() {
+    fn apply_targets_include_missing_directories_only() {
+        let new_dir = |target: &str| FileItem {
+            incoming: Change::Added,
+            ..item(target, FileState::UpdateAvailable, EntryKind::Directory)
+        };
         let overview = Overview {
             files: vec![
                 item(".config/new/a", FileState::UpdateAvailable, EntryKind::File),
                 item(".configx", FileState::UpdateAvailable, EntryKind::File),
             ],
             directories: vec![
+                // Exists, only its permissions differ: never applied along.
                 item(".config", FileState::UpdateAvailable, EntryKind::Directory),
-                item(
-                    ".config/new",
-                    FileState::UpdateAvailable,
-                    EntryKind::Directory,
-                ),
+                new_dir(".config/new"),
             ],
             ..Default::default()
         };
         assert_eq!(
             overview.apply_targets(&[".config/new/a".into(), ".configx".into()]),
-            vec![".config", ".config/new", ".config/new/a", ".configx"]
+            vec![".config/new", ".config/new/a", ".configx"]
         );
     }
 
