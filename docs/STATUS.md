@@ -11,10 +11,34 @@
 | 2 | GUI：变更列表、差异视图、应用 / 保留本地修改、托管文件、环境 | 完成 |
 | 3 | Git：源仓库状态、提交、拉取、推送 | 完成 |
 | 4 | MCP 服务（`chezmate mcp`，stdio） | 完成 |
+| 5 | 新手简化模型：每个文件一种状态 + 一个「同步」（Core、GUI 概览页、CLI、MCP），中英双语 | 完成 |
 
 ## 下一步
 
-新手简化模型（以及是否脱离 chezmoi）见 [HANDOFF.md](HANDOFF.md)，在新会话中开始。
+见 [HANDOFF.md](HANDOFF.md)。
+
+## 已实现（简化模型）
+
+2026-11-07 与用户确认：建在 chezmoi 之上（不自建引擎）；界面中英双语、跟随系统；同步前显示摘要，要保存的文件可逐个取消；概览页用左列表 + 右详情。
+
+| 部分 | 内容 | 测试 |
+| --- | --- | --- |
+| Core `sync` | `Overview`（文件状态、设置步骤、每次都运行的脚本、共享仓库状态）、`SyncPlan`、`execute_sync`、`fetch_shared` / `pull_shared`、`sync`（CLI / MCP 用） | 单元测试；`tests/sync.rs` 用两个沙箱 HOME 共享一个本地裸仓库，覆盖：改动在两台电脑间传递、两边都改、新电脑已有文件、跳过保存、本机删除、模板和设置步骤、新目录、无仓库、计划过期、离线、共享版本冲突 |
+| GUI 概览 | 首页；分组列表、状态说明、按状态给出操作（存到共享版本 / 放弃修改 / 保留这台电脑的 / 用共享版本 / 恢复 / 不再同步 / 现在更新 / 现在运行 / 打开模板），差异方向随状态调整并标注颜色含义；同步 = 获取共享版本 → 确认对话框（可取消勾选保存项，离线时提示）→ 执行 | 无头窗口 UI 测试（含两台电脑同步、取消勾选、离线）；`--test screenshots` 离屏截图目测（中英文、浅色和深色） |
+| CLI | `chezmate overview`、`chezmate sync [--dry-run] [--skip T]` | 沙箱集成测试 |
+| MCP | `sync_overview`（只读）、`sync`（默认 dry run）；原有 15 个工具名称和顺序不变 | 端到端测试（新旧协议、只读模式） |
+
+状态如何得出（chezmoi `status` 两列 + 持久状态）：
+
+| 状态 | 条件 |
+| --- | --- |
+| 这台电脑上改过 `changed_here` | 第一列为 M/A，且 `state dump` 里上次写入的哈希 == `chezmoi cat` 的哈希 |
+| 两边都改了 `both_changed` | 第一列为 M/A 且哈希不同；或第一列为空、第二列为 M、chezmoi 没有写入记录（文件或链接） |
+| 有新版本 `update_available` | 第一列为空，第二列为 A/M/D（除上一行） |
+| 这台电脑上删除了 `deleted_here` | 第一列为 D |
+| 不能自动保存 `cannot_save` | 模板、`modify_` / `remove_`、目录；本机改过时归入「需要你决定」 |
+
+同步的执行顺序：保存（re-add）→ 更新与设置步骤（分 `before_` / 普通 / `after_` 三轮 apply，自动带上待创建的父目录；有更新时才运行每次都运行的脚本）→ 有改动就提交 → 有远端就推送（失败只作为 `push_error` 报告）。每一项执行前都按当前状态重新检查，已经变化的跳过。
 
 ## 已实现（Core / CLI）
 
@@ -75,7 +99,12 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 - `forget` 不加 `--force` 会提示确认并失败；
 - `re-add` 静默跳过模板；
 - 没有 `once_` / `onchange_` 的 `run_` 脚本每次 apply 都运行，`status` 永远列出它；Core 标为 `runs_every_apply`，界面、CLI、MCP 不把它算作待处理；
-- `MM` 无法区分"只有本机改过"和"两边都改了"；可用 `chezmoi state dump` 中 `entryState` 的 `contentsSHA256` 与 `chezmoi cat` 的哈希比较区分（已在沙箱验证，尚未实现）；
+- `MM` 无法区分"只有本机改过"和"两边都改了"；用 `chezmoi state dump` 中 `entryState` 的 `contentsSHA256` 与 `chezmoi cat` 的哈希比较区分（符号链接的记录不含 `cat` 输出末尾的换行）；
+- chezmoi 从没写过、但已存在且内容不同的文件，`status` 只显示 ` M`，`apply` 会不提示直接覆盖；
+- 只 apply 新目录里的文件会失败（父目录不存在），必须连同待创建的父目录一起 apply；
+- 指定目标 apply 时，chezmoi 按名字顺序运行脚本，忽略 `before_` / `after_`；完整 apply 才遵守；
+- 本机删除的文件（`DA`）不加 `--force` 无法恢复（chezmoi 认为它在外部被改过）；
+- `git pull --rebase --autostash` 在暂存的改动放不回去时返回成功，但留下冲突标记；Core 检测到后撤销拉取并恢复改动；
 - chezmoi 拒绝添加位于其配置目录内的文件（测试沙箱据此布局）；
 - `.chezmoi.os` 使用 Go 的命名（`darwin`）。
 
@@ -85,4 +114,6 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 - 从 Finder 启动的应用 `PATH` 很短，Core 会为子进程补上 `/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等目录，以便 chezmoi 找到 gpg、git；
 - GUI 已在 macOS 浅色模式下用真实配置截图检查四个页面（2026-11-07），并据此调整：普通目录不单独列出、列表行统一两行、Files 详情的操作移到信息下方、加密文件改为在 Finder 中显示源文件。深色模式、Linux、Windows 尚未检查；
 - 启用 GPUI Kit 的 `test-support` 后，`gpui-fast` 的精确版本要求与默认解析结果冲突（taffy 等），因此 Cargo.lock 以上游 gpui-kit v0.9.0 的锁文件为基础生成。升级 gpui-kit 时应同样参照上游锁文件；
-- 界面文字目前只有英文。
+- 简化界面（概览、同步、侧栏、状态栏）中英双语；高级页面只有英文；
+- 两台电脑改了共享版本里的同一个文件、且这台电脑的改动还没上传时，同步的拉取会被撤销并报错，需要在 Repository 页或终端处理；
+- 真机截图需要屏幕解锁；锁屏时用 `CHEZMATE_SCREENSHOTS=<目录> cargo test -p chezmate-app --test screenshots` 离屏渲染（2026-11-07 用它检查了概览页的中英文、浅色和深色）。
