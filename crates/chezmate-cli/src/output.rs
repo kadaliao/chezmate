@@ -89,12 +89,17 @@ fn apply_label(change: Change) -> &'static str {
 }
 
 pub fn status(entries: &[StatusEntry]) -> String {
-    if entries.is_empty() {
-        return "Everything is up to date.".into();
-    }
-    let width = entries.iter().map(|e| e.path.len()).max().unwrap_or(0);
     let mut s = String::new();
-    for entry in entries {
+    let (pending, always): (Vec<_>, Vec<_>) = entries.iter().partition(|e| e.is_pending());
+    if pending.is_empty() {
+        s.push_str("Everything is up to date.\n");
+    }
+    if !always.is_empty() {
+        let names: Vec<&str> = always.iter().map(|e| e.path.as_str()).collect();
+        let _ = writeln!(s, "Runs on every apply: {}", names.join(", "));
+    }
+    let width = pending.iter().map(|e| e.path.len()).max().unwrap_or(0);
+    for entry in pending {
         let mut line = format!("{:width$}  {}", entry.path, apply_label(entry.apply));
         if entry.has_local_changes() {
             line.push_str("  (edited locally)");

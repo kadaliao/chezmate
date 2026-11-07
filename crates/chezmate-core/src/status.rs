@@ -44,6 +44,9 @@ pub struct StatusEntry {
     pub local: Change,
     /// Second column: what `chezmoi apply` would do to the target.
     pub apply: Change,
+    /// A `run_` script without `once_` or `onchange_`. chezmoi runs it on
+    /// every apply, so status lists it forever; it is not a pending change.
+    pub runs_every_apply: bool,
 }
 
 impl StatusEntry {
@@ -59,6 +62,12 @@ impl StatusEntry {
 
     pub fn is_script(&self) -> bool {
         self.apply == Change::Run
+    }
+
+    /// Something applying would resolve, as opposed to a script that runs
+    /// on every apply.
+    pub fn is_pending(&self) -> bool {
+        !self.runs_every_apply
     }
 }
 
@@ -86,6 +95,7 @@ pub fn parse_status(output: &str) -> Result<Vec<StatusEntry>> {
             path: path.to_string(),
             local,
             apply,
+            runs_every_apply: false,
         });
     }
     Ok(entries)
@@ -111,17 +121,20 @@ mod tests {
                 StatusEntry {
                     path: ".hello".into(),
                     local: Change::None,
-                    apply: Change::Added
+                    apply: Change::Added,
+                    runs_every_apply: false,
                 },
                 StatusEntry {
                     path: ".config/my app/rc".into(),
                     local: Change::Modified,
-                    apply: Change::Modified
+                    apply: Change::Modified,
+                    runs_every_apply: false,
                 },
                 StatusEntry {
                     path: "install.sh".into(),
                     local: Change::None,
-                    apply: Change::Run
+                    apply: Change::Run,
+                    runs_every_apply: false,
                 },
             ]
         );

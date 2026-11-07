@@ -286,6 +286,17 @@ impl ChangesView {
                 plural(overwrites, "file", "files")
             ));
         }
+        match snapshot.every_apply.as_slice() {
+            [] => {}
+            [one] => lines.push(format!(
+                "{} also runs, as it does on every apply.",
+                one.path
+            )),
+            many => lines.push(format!(
+                "{} scripts that run on every apply also run.",
+                many.len()
+            )),
+        }
         let description = if lines.is_empty() {
             "Your home directory will match your dotfiles.".to_string()
         } else {
@@ -759,6 +770,7 @@ mod tests {
             path: ".zshrc".into(),
             local,
             apply,
+            runs_every_apply: false,
         }
     }
 

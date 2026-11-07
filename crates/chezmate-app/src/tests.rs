@@ -432,3 +432,26 @@ fn repository_commits_pushes_and_pulls(cx: &mut TestAppContext) {
         "the incoming change waits in Changes"
     );
 }
+
+#[gpui_kit::test]
+fn every_apply_scripts_are_not_pending_changes(cx: &mut TestAppContext) {
+    let sb = Sandbox::new(&[
+        ("dot_hello", "hello\n"),
+        ("run_after_ensure.sh", "#!/bin/sh\ntrue\n"),
+    ]);
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    let (handle, view) = open(cx, &sb);
+    assert!(statuses(&view, cx).is_empty());
+    cx.read(|cx| {
+        let snapshot = view.read(cx).model().read(cx).snapshot().cloned().unwrap();
+        assert_eq!(snapshot.every_apply.len(), 1);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("refresh-empty").is_some(),
+            "shows Up to date"
+        );
+    })
+    .unwrap();
+}

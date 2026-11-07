@@ -348,11 +348,23 @@ impl Chezmoi {
 
     /// Targets that differ from the source state. Templates are rendered and
     /// encrypted files decrypted to compute this, so it may invoke gpg, age or
-    /// a password manager.
+    /// a password manager. Scripts that run on every apply are marked with
+    /// [`StatusEntry::runs_every_apply`].
     pub fn status(&self, targets: &[String]) -> Result<Vec<StatusEntry>> {
         let mut args: Vec<OsString> = vec!["status".into()];
         args.extend(self.target_args(targets)?);
-        parse_status(&self.run(args, Some(READ_TIMEOUT))?)
+        let mut entries = parse_status(&self.run(args, Some(READ_TIMEOUT))?)?;
+        if entries.iter().any(StatusEntry::is_script) {
+            let always: HashMap<String, bool> = self
+                .managed()?
+                .into_iter()
+                .map(|m| (m.target.clone(), m.runs_every_apply()))
+                .collect();
+            for entry in entries.iter_mut().filter(|e| e.is_script()) {
+                entry.runs_every_apply = always.get(&entry.path).copied().unwrap_or(false);
+            }
+        }
+        Ok(entries)
     }
 
     /// Every target chezmoi manages, sorted by target path.

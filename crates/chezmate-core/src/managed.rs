@@ -52,6 +52,14 @@ pub struct ManagedEntry {
     pub attributes: SourceAttributes,
 }
 
+impl ManagedEntry {
+    /// A `run_` script without `once_` or `onchange_`: chezmoi runs it on
+    /// every apply.
+    pub fn runs_every_apply(&self) -> bool {
+        self.kind == EntryKind::Script && !self.attributes.once && !self.attributes.onchange
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawPaths {

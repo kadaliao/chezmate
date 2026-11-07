@@ -236,3 +236,26 @@ fn doctor_lists_checks() {
     assert_eq!(version.result, CheckResult::Ok);
     assert!(checks.iter().any(|c| c.check == "source-dir"));
 }
+
+#[test]
+fn scripts_that_run_on_every_apply_are_marked() {
+    let sb = sample();
+    sb.write_source(
+        "run_after_ensure.sh",
+        "#!/bin/sh\necho x >> \"$HOME/ensure.log\"\n",
+    );
+    let status = sb.chezmoi.status(&[]).unwrap();
+    assert!(entry(&status, "ensure.sh").runs_every_apply);
+    assert!(
+        !entry(&status, "setup.sh").runs_every_apply,
+        "run_once is pending"
+    );
+
+    sb.chezmoi.apply(&[], &ApplyOptions::default()).unwrap();
+    let status = sb.chezmoi.status(&[]).unwrap();
+    // chezmoi keeps listing it, but nothing is pending any more.
+    assert_eq!(status.len(), 1);
+    assert!(status[0].runs_every_apply && !status[0].is_pending());
+    sb.chezmoi.apply(&[], &ApplyOptions::default()).unwrap();
+    assert_eq!(sb.read_home("ensure.log"), "x\nx\n");
+}

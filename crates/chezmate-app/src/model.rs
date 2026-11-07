@@ -14,7 +14,11 @@ use gpui_kit::{Context, EventEmitter, SharedString, Task};
 /// Everything the Changes and Files pages show, read in one refresh.
 pub struct Snapshot {
     pub info: Info,
+    /// Pending changes: what applying would resolve.
     pub status: Vec<StatusEntry>,
+    /// Scripts that run on every apply. chezmoi always lists them, so they
+    /// are kept apart from pending changes.
+    pub every_apply: Vec<StatusEntry>,
     pub managed: Vec<ManagedEntry>,
     managed_index: HashMap<String, usize>,
     pub diffs: HashMap<SharedString, DiffFile>,
@@ -307,7 +311,7 @@ impl Dotfiles {
                 let git = chezmoi.git().map_err(|err| err.to_string())?;
                 git.pull().map_err(|err| err.to_string())?;
                 let pending = chezmoi.status(&[]).map_err(|err| err.to_string())?;
-                Ok(match pending.len() {
+                Ok(match pending.iter().filter(|e| e.is_pending()).count() {
                     0 => "Pulled. Your home directory is up to date".to_string(),
                     n => format!("Pulled. {n} incoming changes are ready to review in Changes"),
                 })
@@ -372,7 +376,11 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
             info.paths.source_dir.display()
         ));
     }
-    let status = chezmoi.status(&[]).map_err(|err| err.to_string())?;
+    let (status, every_apply): (Vec<_>, Vec<_>) = chezmoi
+        .status(&[])
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .partition(StatusEntry::is_pending);
     let managed = chezmoi.managed().map_err(|err| err.to_string())?;
     let managed_index = managed
         .iter()
@@ -406,6 +414,7 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
     Ok(Snapshot {
         info,
         status,
+        every_apply,
         managed,
         managed_index,
         diffs,
@@ -459,6 +468,7 @@ mod tests {
         fs::write(source.join("private_dot_ssh/config"), "Host *\n").unwrap();
         fs::write(source.join("symlink_dot_link"), ".hello\n").unwrap();
         fs::write(source.join("run_once_setup.sh"), "#!/bin/sh\ntrue\n").unwrap();
+        fs::write(source.join("run_after_always.sh"), "#!/bin/sh\ntrue\n").unwrap();
         fs::write(source.join("executable_dot_tool"), "#!/bin/sh\n").unwrap();
         fs::write(source.join("empty_dot_keep"), "").unwrap();
         let chezmoi = Chezmoi::new(ChezmoiOptions {
@@ -488,6 +498,12 @@ mod tests {
         fs::rename(source.join("executable_dot_tool"), source.join("dot_tool")).unwrap();
         let snapshot = load(&chezmoi).unwrap();
         assert_eq!(snapshot.diff_error, None);
+        // run_once ran; the every-apply script is never pending.
+        assert!(
+            snapshot.status.iter().all(|e| !e.is_script()),
+            "{:?}",
+            snapshot.status
+        );
         assert!(snapshot.diff(".hello").is_some_and(|d| d.additions() == 1));
         assert!(snapshot.diff(".profile").is_some());
     }

@@ -460,7 +460,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "chezmoi_status",
         title: "Pending changes",
-        description: "Targets that differ from the source state. Each entry has `local` (how the file on disk changed since chezmoi last wrote it; anything but \"none\" means it was edited outside chezmoi) and `apply` (what chezmoi_apply would do: added, modified, deleted, or run for scripts). Empty means up to date.",
+        description: "Targets that differ from the source state. Each entry has `local` (how the file on disk changed since chezmoi last wrote it; anything but \"none\" means it was edited outside chezmoi) and `apply` (what chezmoi_apply would do: added, modified, deleted, or run for scripts). `runs_every_apply` marks scripts chezmoi runs on every apply; they are always listed and are not pending, and `up_to_date` ignores them.",
         properties: || {
             (
                 json!({ "targets": targets_property("Limit to these targets. Default: all.") }),
@@ -474,8 +474,9 @@ const TOOLS: &[Tool] = &[
         run: |chezmoi, arguments| {
             let a: TargetsArgs = args(arguments)?;
             let status = chezmoi.status(&a.targets)?;
+            let up_to_date = status.iter().all(|e| !e.is_pending());
             Ok(ToolOutput::json(
-                json!({ "up_to_date": status.is_empty(), "entries": status }),
+                json!({ "up_to_date": up_to_date, "entries": status }),
             ))
         },
     },
