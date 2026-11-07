@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use chezmate_core::{
     AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, Commit, DiffOptions, DoctorCheck, FileState,
-    Info, ManagedEntry, Overview, RepoStatus, StatusEntry, SyncOutcome, SyncPlan,
+    Info, ManagedEntry, Overview, RepoStatus, StatusEntry, SyncOutcome, SyncPlan, is_pull_conflict,
 };
 use gpui_kit::component::diff::{DiffFile, DiffParseOptions};
 use gpui_kit::{Context, EventEmitter, SharedString, Task};
@@ -254,10 +254,17 @@ impl Dotfiles {
                     Ok(0) => (0, None),
                     Ok(behind) => {
                         chezmoi.git().and_then(|git| git.pull()).map_err(|err| {
-                            tr(
-                                format!("Could not get the shared version: {err}"),
-                                format!("获取共享版本失败：{err}"),
-                            )
+                            if is_pull_conflict(&err) {
+                                tr(
+                                    "Another computer and this one changed the same file in the shared version, so it cannot be merged automatically. Nothing was changed. Resolve it under Advanced › Repository or in a terminal.".to_string(),
+                                    "另一台电脑和这台电脑都改了共享版本里的同一个文件，无法自动合并，什么都没有改变。请在「高级 › Repository」或终端里处理。".to_string(),
+                                )
+                            } else {
+                                tr(
+                                    format!("Could not get the shared version: {err}"),
+                                    format!("获取共享版本失败：{err}"),
+                                )
+                            }
                         })?;
                         (behind, None)
                     }

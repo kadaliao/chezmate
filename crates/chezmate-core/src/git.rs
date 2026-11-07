@@ -235,22 +235,57 @@ impl Git {
     }
 
     /// Pulls with `--rebase --autostash`, like `chezmoi update`, but never
-    /// leaves a half-finished rebase: on conflict the rebase is aborted and
-    /// the repository is back where it started.
+    /// leaves a conflict behind: if the pulled commits conflict with local
+    /// commits the rebase is aborted, and if they conflict with uncommitted
+    /// changes the pull is undone and the changes restored. Either way the
+    /// repository is back where it started and [`is_pull_conflict`] is true
+    /// for the error.
     pub fn pull(&self) -> Result<()> {
+        let before = self.head()?;
         let args = ["pull", "--rebase", "--autostash", "--quiet"];
         let captured = self.exec(&args, NETWORK_TIMEOUT)?;
         if captured.success() {
-            return Ok(());
+            // git reports success when the rebase worked but reapplying the
+            // stashed changes conflicted, leaving conflict markers behind.
+            let conflicted = self
+                .status()?
+                .changes
+                .iter()
+                .any(|c| c.status == GitFileStatus::Conflicted);
+            if !conflicted {
+                return Ok(());
+            }
+            let undone = match &before {
+                Some(head) => self
+                    .run(&["reset", "--quiet", "--hard", head], LOCAL_TIMEOUT)
+                    .and_then(|_| self.run(&["stash", "pop", "--quiet"], LOCAL_TIMEOUT))
+                    .is_ok(),
+                None => false,
+            };
+            return Err(Error::Failed {
+                command: format!("git {}", args.join(" ")),
+                code: captured.status.code(),
+                stderr: if undone {
+                    format!(
+                        "{CONFLICT_NOTE} with uncommitted changes. Chezmate undid the pull; the repository is unchanged. Commit or discard those changes, then pull again."
+                    )
+                } else {
+                    format!(
+                        "{CONFLICT_NOTE} with uncommitted changes, and Chezmate could not undo it; the changes are in `git stash list`. Resolve it in a terminal."
+                    )
+                },
+            });
         }
         let mut err = failed(&args, &captured);
         if self.rebase_in_progress() {
             let aborted = self.exec(&["rebase", "--abort"], LOCAL_TIMEOUT)?;
             if let Error::Failed { stderr, .. } = &mut err {
+                stderr.push('\n');
+                stderr.push_str(CONFLICT_NOTE);
                 stderr.push_str(if aborted.success() {
-                    "\nThe pull conflicted with local commits. Chezmate aborted the rebase; the repository is unchanged."
+                    " with local commits. Chezmate aborted the rebase; the repository is unchanged."
                 } else {
-                    "\nThe pull conflicted with local commits and `git rebase --abort` failed; resolve it in a terminal."
+                    " with local commits and `git rebase --abort` failed; resolve it in a terminal."
                 });
             }
         }
@@ -270,6 +305,15 @@ impl Git {
     pub fn push(&self) -> Result<()> {
         self.run(&["push", "--quiet"], NETWORK_TIMEOUT).map(drop)
     }
+}
+
+const CONFLICT_NOTE: &str = "The pull conflicted";
+
+/// The error is [`Git::pull`] refusing a pull that conflicts with changes
+/// on this computer.
+pub fn is_pull_conflict(err: &Error) -> bool {
+    matches!(err, Error::Failed { command, stderr, .. }
+        if command.starts_with("git pull") && stderr.contains(CONFLICT_NOTE))
 }
 
 fn failed(args: &[&str], captured: &Captured) -> Error {

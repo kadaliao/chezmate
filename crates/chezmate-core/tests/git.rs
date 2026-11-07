@@ -185,6 +185,7 @@ fn conflicting_pull_leaves_the_repository_unchanged() {
     let err = git_ops.pull().unwrap_err();
     assert_eq!(err.kind(), "command_failed");
     assert!(err.to_string().contains("aborted the rebase"), "{err}");
+    assert!(chezmate_core::is_pull_conflict(&err));
     let status = git_ops.status().unwrap();
     assert_eq!(status.head, head);
     assert!(status.is_clean());
@@ -204,4 +205,50 @@ fn repository_without_commits() {
     assert!(git_ops.diff().unwrap().contains("+hello"));
     git_ops.commit_all("First").unwrap();
     assert_eq!(git_ops.log(5).unwrap().len(), 1);
+}
+
+#[test]
+fn pull_conflicting_with_uncommitted_changes_is_undone() {
+    let Setup {
+        sb,
+        env,
+        other,
+        _git_config,
+    } = setup();
+    fs::write(other.join("dot_hello"), "laptop\n").unwrap();
+    git(&other, &env, &["commit", "-q", "-am", "Laptop edit"]);
+    git(&other, &env, &["push", "-q"]);
+
+    // Not committed: git's autostash cannot put it back after the pull.
+    sb.write_source("dot_hello", "desktop, not committed\n");
+    let git_ops = sb.chezmoi.git().unwrap();
+    let head = git_ops.status().unwrap().head;
+    let err = git_ops.pull().unwrap_err();
+    assert!(chezmate_core::is_pull_conflict(&err), "{err}");
+    assert!(err.to_string().contains("undid the pull"), "{err}");
+
+    let status = git_ops.status().unwrap();
+    assert_eq!(status.head, head);
+    assert_eq!(status.changes.len(), 1);
+    assert_eq!(status.changes[0].status, GitFileStatus::Modified);
+    assert_eq!(sb.read_source("dot_hello"), "desktop, not committed\n");
+    assert_eq!(git(&sb.source, &env, &["stash", "list"]), "");
+}
+
+#[test]
+fn pull_with_unrelated_uncommitted_changes_keeps_them() {
+    let Setup {
+        sb,
+        env,
+        other,
+        _git_config,
+    } = setup();
+    fs::write(other.join("dot_other"), "from laptop\n").unwrap();
+    git(&other, &env, &["add", "-A"]);
+    git(&other, &env, &["commit", "-q", "-m", "Laptop adds a file"]);
+    git(&other, &env, &["push", "-q"]);
+    sb.write_source("dot_hello", "desktop edit\n");
+    sb.chezmoi.git().unwrap().pull().unwrap();
+    assert_eq!(sb.read_source("dot_other"), "from laptop\n");
+    assert_eq!(sb.read_source("dot_hello"), "desktop edit\n");
 }

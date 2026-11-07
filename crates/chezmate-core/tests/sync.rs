@@ -387,3 +387,26 @@ fn offline_sync_saves_here_and_uploads_later() {
         "on a plane\n"
     );
 }
+
+#[test]
+fn a_shared_version_conflict_stops_the_sync_untouched() {
+    let world = World::new(&[("dot_hello", "hello\n")]);
+    let laptop = world.computer(true);
+    let desktop = world.computer(true);
+    laptop.write_home(".hello", "laptop 1\n");
+    sync(&laptop);
+    desktop.write_home(".hello", "desktop\n");
+    sync(&desktop); // both changed: left for a decision
+    desktop.chezmoi.re_add(&[".hello".into()]).unwrap(); // keep the desktop's
+    laptop.write_home(".hello", "laptop 2\n");
+    sync(&laptop); // meanwhile the laptop changes it again
+
+    let err = desktop.chezmoi.sync(&SyncOptions::default()).unwrap_err();
+    assert!(chezmate_core::is_pull_conflict(&err), "{err}");
+    assert_eq!(desktop.read_source("dot_hello"), "desktop\n");
+    assert_eq!(desktop.read_home(".hello"), "desktop\n");
+    assert!(
+        !desktop.read_source("dot_hello").contains("<<<<<<<"),
+        "no conflict markers"
+    );
+}
