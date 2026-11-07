@@ -806,7 +806,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "sync",
         title: "Sync this computer",
-        description: "A dry run unless dry_run is false. A dry run fetches and returns the plan: `save` (changes made here), `update` (files from the shared version), `run` (setup steps), `upload` (commit and push), `decide` (left alone). With dry_run false it pulls first (a conflicting pull is aborted and nothing changes), re-plans, and carries the plan out; it never overwrites a file changed on this computer. `outcome.push_error` means everything here is done but uploading failed.",
+        description: "A dry run unless dry_run is false. A dry run fetches and returns the plan: `save` (changes made here), `update` (files from the shared version), `run` (setup steps), `upload` (commit and push), `decide` (left alone). With dry_run false it pulls first (a conflicting pull is aborted and nothing changes), re-plans, and carries the plan out; it never overwrites a file changed on this computer. An unreachable remote is a warning: this computer is still synced and `outcome.push_error` says uploading failed; the next sync uploads.",
         properties: || {
             (
                 json!({

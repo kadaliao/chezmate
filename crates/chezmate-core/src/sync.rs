@@ -327,7 +327,8 @@ pub struct SyncOptions {
     pub skip: Vec<String>,
 }
 
-/// The result of [`Chezmoi::sync`].
+/// The result of [`Chezmoi::sync`]. A remote that cannot be reached is a
+/// warning, not an error.
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncReport {
     pub dry_run: bool,
@@ -647,13 +648,22 @@ impl Chezmoi {
             .map(|t| self.relative_target(&dest, t))
             .collect::<Result<Vec<_>>>()?;
         let mut warnings = Vec::new();
-        let incoming_commits = if options.dry_run {
-            self.fetch_shared().unwrap_or_else(|err| {
-                warnings.push(format!("Could not check the remote: {err}"));
+        // Offline, a sync still saves and updates on this computer; the
+        // commit is uploaded by a later sync. A failed pull (a conflict)
+        // stops it.
+        let incoming_commits = match self.fetch_shared() {
+            Ok(behind) => {
+                if behind > 0 && !options.dry_run {
+                    self.git()?.pull()?;
+                }
+                behind
+            }
+            Err(err) => {
+                warnings.push(format!(
+                    "Could not reach the remote, so only this computer is synced: {err}"
+                ));
                 0
-            })
-        } else {
-            self.pull_shared()?
+            }
         };
         let overview = self.overview()?;
         let plan = SyncPlan::new(&overview, &skip);

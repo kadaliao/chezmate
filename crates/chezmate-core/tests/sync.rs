@@ -362,3 +362,28 @@ fn a_stale_plan_does_not_overwrite_new_edits() {
     assert_eq!(outcome.skipped[0].target, ".hello");
     assert_eq!(desktop.read_home(".hello"), "typed meanwhile\n");
 }
+
+#[test]
+fn offline_sync_saves_here_and_uploads_later() {
+    let world = World::new(&[("dot_hello", "hello\n")]);
+    let laptop = world.computer(true);
+    let moved = world.remote.with_extension("away");
+    fs::rename(&world.remote, &moved).unwrap();
+    laptop.write_home(".hello", "on a plane\n");
+
+    let report = laptop.chezmoi.sync(&SyncOptions::default()).unwrap();
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    let outcome = report.outcome.unwrap();
+    assert_eq!(outcome.saved, vec![".hello"]);
+    assert!(outcome.commit.is_some());
+    assert!(!outcome.pushed && outcome.push_error.is_some());
+
+    // Back online: the next sync uploads the waiting commit.
+    fs::rename(&moved, &world.remote).unwrap();
+    let outcome = sync(&laptop);
+    assert!(outcome.pushed, "{:?}", outcome.push_error);
+    assert_eq!(
+        git(&world.remote, &world.env, &["show", "main:dot_hello"]),
+        "on a plane\n"
+    );
+}
