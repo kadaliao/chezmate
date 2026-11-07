@@ -103,6 +103,42 @@ fn status_apply_and_conflict_roundtrip() {
 }
 
 #[test]
+fn overview_and_sync() {
+    let sb = Sandbox::new();
+    fs::write(sb.source.join("dot_profile"), "profile\n").unwrap();
+    fs::write(sb.home.join(".profile"), "my own profile\n").unwrap();
+    let (ok, overview) = sb.json(&["overview"]);
+    assert!(ok, "{overview}");
+    let files = overview["data"]["files"].as_array().unwrap();
+    assert_eq!(files[0]["target"], ".hello");
+    assert_eq!(files[0]["state"], "update_available");
+    assert_eq!(files[0]["incoming"], "added");
+    assert_eq!(files[1]["target"], ".profile");
+    assert_eq!(files[1]["state"], "both_changed");
+    assert_eq!(files[1]["never_synced"], true);
+    assert_eq!(overview["data"]["shared"], Value::Null);
+
+    let (ok, dry) = sb.json(&["sync", "--dry-run"]);
+    assert!(ok);
+    assert_eq!(dry["data"]["plan"]["update"][0], ".hello");
+    assert_eq!(dry["data"]["plan"]["decide"][0], ".profile");
+    assert!(!sb.home.join(".hello").exists());
+
+    let (ok, done) = sb.json(&["sync"]);
+    assert!(ok, "{done}");
+    assert_eq!(done["data"]["outcome"]["updated"][0], ".hello");
+    assert_eq!(
+        fs::read_to_string(sb.home.join(".hello")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        fs::read_to_string(sb.home.join(".profile")).unwrap(),
+        "my own profile\n",
+        "a file this computer had of its own is never overwritten"
+    );
+}
+
+#[test]
 fn forget_requires_confirmation() {
     let sb = Sandbox::new();
     let (ok, err) = sb.json(&["forget", ".hello"]);

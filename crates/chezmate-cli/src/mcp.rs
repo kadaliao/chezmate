@@ -8,7 +8,7 @@
 use std::io::{self, BufRead, Write};
 
 use chezmate_core::{
-    AddOptions, ApplyOptions, Chezmoi, DiffOptions, EntryType, Error, ManagedEntry,
+    AddOptions, ApplyOptions, Chezmoi, DiffOptions, EntryType, Error, ManagedEntry, SyncOptions,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -28,7 +28,8 @@ const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
 
 const INSTRUCTIONS: &str = "Chezmate manages dotfiles with chezmoi. \
 Target paths are relative to the destination (home) directory, exactly as chezmoi_status reports them; absolute paths and ~/ also work. \
-Typical flow: chezmoi_status, then chezmoi_diff for the targets, then chezmoi_apply. \
+Simplest flow: sync_overview shows every differing file with one state (changed_here, update_available, both_changed, deleted_here); sync is a dry run unless dry_run is false, and then pulls, saves changes made here, updates this computer, runs setup steps, commits and pushes. Files that need a decision are never touched by sync: keep this computer's version with chezmoi_re_add, or take the shared version with chezmoi_apply and force. \
+Lower-level flow: chezmoi_status, then chezmoi_diff for the targets, then chezmoi_apply. \
 chezmoi_apply is a dry run unless dry_run is false; a target edited outside chezmoi fails with kind \"conflict\" unless force is true, and chezmoi_re_add keeps the local edit instead. \
 Diffs leave out encrypted files unless include_encrypted is true; rendered templates can still contain secrets. \
 git_pull only updates the source directory: review chezmoi_status and chezmoi_diff, then apply. \
@@ -438,6 +439,15 @@ struct CommitArgs {
     message: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyncArgs {
+    #[serde(default = "yes")]
+    dry_run: bool,
+    #[serde(default)]
+    skip: Vec<String>,
+}
+
 fn managed_json(entries: &[ManagedEntry]) -> Value {
     json!({ "count": entries.len(), "entries": entries })
 }
@@ -777,6 +787,46 @@ const TOOLS: &[Tool] = &[
             args::<NoArgs>(arguments)?;
             chezmoi.git()?.push()?;
             Ok(ToolOutput::json(json!({ "pushed": true })))
+        },
+    },
+    Tool {
+        name: "sync_overview",
+        title: "What differs, simply",
+        description: "Every file that differs between this computer and the shared version (the source repository), each with one `state`: changed_here (sync saves it), update_available (sync applies it), both_changed or deleted_here (needs a decision; sync leaves it alone). `cannot_save` explains why a change here cannot be saved automatically (template, script, directory); `never_synced` marks a file this computer has its own version of. Also lists setup steps (scripts sync runs), scripts that run on every apply, and the shared repository (ahead/behind as of the last fetch, uncommitted changes). Local only; no network.",
+        properties: no_properties,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        open_world: false,
+        run: |chezmoi, arguments| {
+            args::<NoArgs>(arguments)?;
+            Ok(ToolOutput::json(json!(chezmoi.overview()?)))
+        },
+    },
+    Tool {
+        name: "sync",
+        title: "Sync this computer",
+        description: "A dry run unless dry_run is false. A dry run fetches and returns the plan: `save` (changes made here), `update` (files from the shared version), `run` (setup steps), `upload` (commit and push), `decide` (left alone). With dry_run false it pulls first (a conflicting pull is aborted and nothing changes), re-plans, and carries the plan out; it never overwrites a file changed on this computer. `outcome.push_error` means everything here is done but uploading failed.",
+        properties: || {
+            (
+                json!({
+                    "dry_run": { "type": "boolean", "default": true, "description": "Only fetch and plan. Set false to sync." },
+                    "skip": targets_property("Files changed on this computer not to save this time."),
+                }),
+                &[],
+            )
+        },
+        read_only: false,
+        destructive: true,
+        idempotent: true,
+        open_world: true,
+        run: |chezmoi, arguments| {
+            let a: SyncArgs = args(arguments)?;
+            let report = chezmoi.sync(&SyncOptions {
+                dry_run: a.dry_run,
+                skip: a.skip,
+            })?;
+            Ok(ToolOutput::json(json!(report)))
         },
     },
 ];

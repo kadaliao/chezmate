@@ -159,6 +159,30 @@ fn workflow(s: &mut Session) {
     let (err, outside) = s.call("chezmoi_diff", json!({ "targets": ["../etc/passwd"] }));
     assert!(err);
     assert_eq!(outside["kind"], "invalid_request");
+
+    // The simplified model: one state per file, and sync as a dry run first.
+    fs::write(s.home.join(".hello"), "edited again\n").unwrap();
+    let (err, overview) = s.call("sync_overview", json!({}));
+    assert!(!err, "{overview}");
+    assert_eq!(overview["files"][0]["target"], ".hello");
+    assert_eq!(overview["files"][0]["state"], "changed_here");
+    let (err, dry) = s.call("sync", json!({}));
+    assert!(!err, "{dry}");
+    assert_eq!(dry["dry_run"], true);
+    assert_eq!(dry["plan"]["save"][0], ".hello");
+    assert_eq!(
+        fs::read_to_string(s.source.join("dot_hello")).unwrap(),
+        "mine\n"
+    );
+    let (err, done) = s.call("sync", json!({ "dry_run": false }));
+    assert!(!err, "{done}");
+    assert_eq!(done["outcome"]["saved"][0], ".hello");
+    assert_eq!(
+        fs::read_to_string(s.source.join("dot_hello")).unwrap(),
+        "edited again\n"
+    );
+    let (_, overview) = s.call("sync_overview", json!({}));
+    assert_eq!(overview["files"], json!([]));
 }
 
 #[test]
@@ -171,7 +195,7 @@ fn legacy_client_session() {
     assert_eq!(init["result"]["protocolVersion"], "2025-11-25");
     s.send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
     let tools = s.request("tools/list", json!({}));
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 15);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 17);
     workflow(&mut s);
 }
 
@@ -194,7 +218,9 @@ fn read_only_server_cannot_write() {
         .map(|t| t["name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"chezmoi_diff"));
+    assert!(names.contains(&"sync_overview"));
     assert!(!names.contains(&"chezmoi_apply"));
+    assert!(!names.contains(&"sync"));
     let denied = s.request(
         "tools/call",
         json!({ "name": "chezmoi_apply", "arguments": { "dry_run": false } }),

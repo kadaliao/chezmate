@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use chezmate_core::{
-    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, DiffOptions, EntryType, Error,
+    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, DiffOptions, EntryType, Error, SyncOptions,
 };
 use clap::{Args, Parser, Subcommand};
 use serde_json::json;
@@ -54,6 +54,20 @@ struct ChezmoiArgs {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Every file that differs between this computer and the shared version,
+    /// with one state each, plus setup steps and the shared repository.
+    Overview,
+    /// Bring this computer and the shared version together: pull, save
+    /// changes made here, update this computer, run setup steps, then commit
+    /// and push. Files changed on both sides are left for you to decide.
+    Sync {
+        /// Fetch and show the plan without changing anything.
+        #[arg(long, short = 'n')]
+        dry_run: bool,
+        /// A file changed on this computer not to save this time (repeatable).
+        #[arg(long, value_name = "TARGET")]
+        skip: Vec<String>,
+    },
     /// chezmoi version and the directories it uses.
     Info,
     /// Targets that differ from the source state.
@@ -221,6 +235,14 @@ fn run_git(command: GitCommand, chezmoi: &Chezmoi, out: &Output) -> Result<(), E
 fn run(command: Command, args: ChezmoiArgs, out: &Output) -> Result<(), Error> {
     let chezmoi = connect(args)?;
     match command {
+        Command::Overview => {
+            let overview = chezmoi.overview()?;
+            out.data(&overview, || output::overview(&overview));
+        }
+        Command::Sync { dry_run, skip } => {
+            let report = chezmoi.sync(&SyncOptions { dry_run, skip })?;
+            out.data(&report, || output::sync(&report));
+        }
         Command::Info => {
             let info = chezmoi.info()?;
             out.data(&info, || output::info(&info));
