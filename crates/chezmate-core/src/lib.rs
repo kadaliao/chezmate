@@ -9,8 +9,10 @@ mod chezmoi;
 mod doctor;
 mod error;
 mod git;
+mod github;
 mod managed;
 pub mod process;
+mod setup;
 mod status;
 mod sync;
 
@@ -23,7 +25,12 @@ pub use error::{Error, Result};
 pub use git::{
     Commit, Git, GitChange, GitFileStatus, RepoStatus, is_pull_conflict, parse_status_v2,
 };
+pub use github::{GitHub, clone_url, is_repo_name};
 pub use managed::{EntryKind, ManagedEntry, SourceAttributes, classify, parse_managed};
+pub use setup::{
+    ConfigAnswer, ConfigQuestion, QuestionKind, RemoteProblem, Suggestion, Topic, parse_questions,
+    remote_problem, suggestions_in, unanswered_question,
+};
 pub use status::{Change, StatusEntry, parse_status};
 pub use sync::{
     FileItem, FileState, Overview, SaveBlocker, ScriptOrder, ScriptRuns, SetupStep, SharedStatus,

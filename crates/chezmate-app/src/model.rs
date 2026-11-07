@@ -6,8 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chezmate_core::{
-    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, Commit, DiffOptions, DoctorCheck, FileState,
-    Info, ManagedEntry, Overview, RepoStatus, StatusEntry, SyncOutcome, SyncPlan, is_pull_conflict,
+    AddOptions, ApplyOptions, Chezmoi, ChezmoiOptions, Commit, ConfigAnswer, ConfigQuestion,
+    DiffOptions, DoctorCheck, Error, FileState, GitHub, Info, ManagedEntry, Overview,
+    RemoteProblem, RepoStatus, StatusEntry, Suggestion, SyncOutcome, SyncPlan, is_pull_conflict,
+    remote_problem,
 };
 use gpui_kit::component::diff::{DiffFile, DiffParseOptions};
 use gpui_kit::{Context, EventEmitter, SharedString, Task};
@@ -35,11 +37,62 @@ pub struct Snapshot {
     /// Diffs from the shared version to this computer, for files changed
     /// here: added lines are this computer's edits.
     pub local_diffs: HashMap<SharedString, DiffFile>,
+    /// Common dotfiles on this computer, offered while nothing is synced.
+    pub suggestions: Vec<Suggestion>,
+}
+
+impl Snapshot {
+    /// Nothing is synced yet and nothing waits: time to pick files.
+    pub fn is_empty(&self) -> bool {
+        self.overview.managed_files == 0
+            && self.overview.files.is_empty()
+            && self.overview.setup_steps.is_empty()
+    }
+
+    /// Files are synced, but only on this computer: not a git repository,
+    /// or one without any remote. A repository whose state could not be
+    /// read does not count.
+    pub fn needs_remote(&self) -> bool {
+        self.overview.managed_files > 0
+            && match &self.repo {
+                None => true,
+                Some(Ok(repo)) => repo.remotes.is_empty(),
+                Some(Err(_)) => false,
+            }
+    }
+}
+
+/// What this computer still needs before the Overview makes sense.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Setup {
+    /// chezmoi is not installed.
+    NoChezmoi(String),
+    /// chezmoi has never been used here: no shared version yet.
+    Start { source_dir: PathBuf },
+    /// The shared version's config template has questions to answer.
+    Questions(Vec<ConfigQuestion>),
+}
+
+/// Whether the GitHub CLI can create a repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitHubState {
+    Unknown,
+    Checking,
+    /// `gh` is not installed, or not logged in.
+    Unavailable,
+    LoggedIn(String),
+}
+
+enum Loaded {
+    Ready(Box<Snapshot>),
+    Setup(Setup),
 }
 
 /// Local git state of the source directory (no network access).
 pub struct Repo {
     pub status: RepoStatus,
+    /// Names of the configured remotes.
+    pub remotes: Vec<String>,
     pub log: Vec<Commit>,
     /// Uncommitted changes, in repository order.
     pub diffs: Vec<DiffFile>,
@@ -88,6 +141,8 @@ pub enum DotfilesEvent {
     Finished(Result<String, String>),
     /// A commit succeeded; the message input can be cleared.
     Committed,
+    /// The shared version now has a remote.
+    Connected,
     /// The shared version is up to date; the sync runs once someone
     /// confirms the plan made from this overview.
     SyncReady(Arc<Prepared>),
@@ -101,8 +156,17 @@ pub enum DoctorState {
 }
 
 pub struct Dotfiles {
+    options: ChezmoiOptions,
     chezmoi: Result<Chezmoi, String>,
     snapshot: Option<Arc<Snapshot>>,
+    setup: Option<Setup>,
+    /// Why the last setup step failed, shown on the setup page.
+    setup_error: Option<String>,
+    /// Questions chezmoi asked that the template did not reveal.
+    asked: Vec<ConfigQuestion>,
+    github: GitHubState,
+    /// Why connecting to a remote failed, shown in the connect dialog.
+    connect_error: Option<String>,
     loading: bool,
     error: Option<String>,
     busy: Option<SharedString>,
@@ -111,6 +175,7 @@ pub struct Dotfiles {
     _refresh: Task<()>,
     _operation: Task<()>,
     _doctor: Task<()>,
+    _github: Task<()>,
 }
 
 impl EventEmitter<DotfilesEvent> for Dotfiles {}
@@ -118,8 +183,14 @@ impl EventEmitter<DotfilesEvent> for Dotfiles {}
 impl Dotfiles {
     pub fn new(options: ChezmoiOptions, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
-            chezmoi: Chezmoi::new(options).map_err(|err| err.to_string()),
+            chezmoi: Chezmoi::new(options.clone()).map_err(|err| err.to_string()),
+            options,
             snapshot: None,
+            setup: None,
+            setup_error: None,
+            asked: Vec::new(),
+            github: GitHubState::Unknown,
+            connect_error: None,
             loading: false,
             error: None,
             busy: None,
@@ -128,6 +199,7 @@ impl Dotfiles {
             _refresh: Task::ready(()),
             _operation: Task::ready(()),
             _doctor: Task::ready(()),
+            _github: Task::ready(()),
         };
         this.refresh(cx);
         this
@@ -154,18 +226,48 @@ impl Dotfiles {
         &self.doctor
     }
 
+    /// What this computer needs before the Overview, if anything.
+    pub fn setup(&self) -> Option<&Setup> {
+        self.setup.as_ref()
+    }
+
+    pub fn setup_error(&self) -> Option<&str> {
+        self.setup_error.as_deref()
+    }
+
+    pub fn github(&self) -> &GitHubState {
+        &self.github
+    }
+
+    pub fn connect_error(&self) -> Option<&str> {
+        self.connect_error.as_deref()
+    }
+
+    /// Sets the GitHub CLI's state without asking it, for screenshots.
+    #[allow(dead_code)]
+    pub fn set_github(&mut self, state: GitHubState, cx: &mut Context<Self>) {
+        self.github = state;
+        cx.notify();
+    }
+
     /// Reloads status, managed files and the pending diff. Keeps the previous
     /// snapshot visible until the new one arrives; a newer refresh discards
     /// the results of an older one.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // chezmoi may have been installed since the last look.
+        if self.chezmoi.is_err() {
+            self.chezmoi = Chezmoi::new(self.options.clone()).map_err(|err| err.to_string());
+        }
         let chezmoi = match &self.chezmoi {
             Ok(chezmoi) => chezmoi.clone(),
             Err(err) => {
-                self.error = Some(err.clone());
+                self.snapshot = None;
+                self.setup = Some(Setup::NoChezmoi(err.clone()));
                 cx.notify();
                 return;
             }
         };
+        let asked = self.asked.clone();
         self.revision += 1;
         let revision = self.revision;
         self.loading = true;
@@ -173,7 +275,7 @@ impl Dotfiles {
         self._refresh = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { load(&chezmoi) })
+                .spawn(async move { load(&chezmoi, &asked) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.revision != revision {
@@ -181,8 +283,21 @@ impl Dotfiles {
                 }
                 this.loading = false;
                 match result {
-                    Ok(snapshot) => {
-                        this.snapshot = Some(Arc::new(snapshot));
+                    Ok(Loaded::Ready(snapshot)) => {
+                        this.snapshot = Some(Arc::new(*snapshot));
+                        this.setup = None;
+                        // A setup step that failed after moving things on
+                        // (a config template that could not be completed,
+                        // say) is reported here, not dropped with the page.
+                        if let Some(err) = this.setup_error.take() {
+                            cx.emit(DotfilesEvent::Finished(Err(err)));
+                        }
+                        this.asked.clear();
+                        this.error = None;
+                    }
+                    Ok(Loaded::Setup(setup)) => {
+                        this.snapshot = None;
+                        this.setup = Some(setup);
                         this.error = None;
                     }
                     Err(err) => this.error = Some(err),
@@ -576,6 +691,227 @@ impl Dotfiles {
         );
     }
 
+    /// A fresh handle after setup steps: chezmoi's paths may come from the
+    /// config file that was just made, and the handle caches them.
+    fn reopen(&mut self) {
+        self.chezmoi = Chezmoi::new(self.options.clone()).map_err(|err| err.to_string());
+    }
+
+    /// Runs a setup step; a failure is shown on the setup page.
+    fn run_setup(
+        &mut self,
+        label: impl Into<SharedString>,
+        operation: impl FnOnce(&Chezmoi) -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.setup_error = None;
+        self.run_with(
+            label,
+            operation,
+            |this, result, _| {
+                this.setup_error = result.err();
+                this.reopen();
+            },
+            cx,
+        );
+    }
+
+    /// Starts a new shared version on this computer.
+    pub fn start_new(&mut self, cx: &mut Context<Self>) {
+        self.run_setup(
+            tr("Setting up", "正在设置"),
+            |chezmoi| chezmoi.start_new().map_err(|err| err.to_string()),
+            cx,
+        );
+    }
+
+    /// Fetches the shared version from `repo` (a URL or a GitHub user or
+    /// `user/repo`). Nothing in the home directory changes.
+    pub fn start_from(&mut self, repo: String, cx: &mut Context<Self>) {
+        self.setup_error = None;
+        self.run_with(
+            tr("Getting the shared version", "正在取回共享版本"),
+            move |chezmoi| -> Result<Option<ConfigQuestion>, String> {
+                let ssh = GitHub::find(chezmoi.search_path(), &chezmoi.options().env)
+                    .is_some_and(|gh| gh.prefers_ssh());
+                chezmoi
+                    .start_from(&repo, ssh)
+                    .map_err(|err| remote_message(&err))?;
+                // Without questions in sight, make the config right away;
+                // chezmoi may still ask one whose text the template computes.
+                if chezmoi.needs_config().unwrap_or(false)
+                    && chezmoi.config_questions().is_ok_and(|q| q.is_empty())
+                {
+                    return chezmoi.init_config(&[]).map_err(|err| {
+                        tr(
+                            format!("Got the shared version, but chezmoi could not make this computer's settings from its template: {err}"),
+                            format!("已取回共享版本，但 chezmoi 无法用其中的模板生成这台电脑的设置：{err}"),
+                        )
+                    });
+                }
+                Ok(None)
+            },
+            |this, result, _| {
+                match result {
+                    Ok(Some(question)) => this.asked.push(question),
+                    Ok(None) => {}
+                    Err(err) => this.setup_error = Some(err),
+                }
+                this.reopen();
+            },
+            cx,
+        );
+    }
+
+    /// Makes the config file from the template with these answers.
+    pub fn answer_config(&mut self, answers: Vec<ConfigAnswer>, cx: &mut Context<Self>) {
+        self.setup_error = None;
+        self.run_with(
+            tr("Saving the settings", "正在保存设置"),
+            move |chezmoi| chezmoi.init_config(&answers),
+            |this, result, _| {
+                match result {
+                    Ok(None) => {}
+                    Ok(Some(question)) => {
+                        this.setup_error = Some(tr(
+                            format!("One more question: {}", question.prompt),
+                            format!("还有一个问题：{}", question.prompt),
+                        ));
+                        if !this.asked.iter().any(|q| q.prompt == question.prompt) {
+                            this.asked.push(question);
+                        }
+                    }
+                    Err(err) => this.setup_error = Some(err.to_string()),
+                }
+                this.reopen();
+            },
+            cx,
+        );
+    }
+
+    /// Leaves the config file empty instead of answering the template.
+    pub fn skip_config(&mut self, cx: &mut Context<Self>) {
+        self.run_setup(
+            tr("Saving the settings", "正在保存设置"),
+            |chezmoi| chezmoi.skip_config().map_err(|err| err.to_string()),
+            cx,
+        );
+    }
+
+    /// Starts syncing files that are on this computer.
+    pub fn start_syncing(&mut self, targets: Vec<String>, cx: &mut Context<Self>) {
+        if targets.is_empty() {
+            return;
+        }
+        self.run(
+            tr("Adding files", "正在添加文件"),
+            move |chezmoi| {
+                chezmoi
+                    .add(&targets, &AddOptions::default())
+                    .map_err(|err| err.to_string())?;
+                Ok(tr(
+                    if targets.len() == 1 {
+                        "Added 1 file to the shared version".to_string()
+                    } else {
+                        format!("Added {} files to the shared version", targets.len())
+                    },
+                    format!("已把 {} 项加入共享版本", targets.len()),
+                ))
+            },
+            cx,
+        );
+    }
+
+    /// Checks whether the GitHub CLI is installed and logged in. Once it
+    /// is, the answer is kept; otherwise each call looks again (it may have
+    /// been installed or logged in since).
+    pub fn check_github(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.github,
+            GitHubState::Checking | GitHubState::LoggedIn(_)
+        ) {
+            return;
+        }
+        let Ok(chezmoi) = self.chezmoi.clone() else {
+            return;
+        };
+        self.github = GitHubState::Checking;
+        cx.notify();
+        self._github = cx.spawn(async move |this, cx| {
+            let state = cx
+                .background_executor()
+                .spawn(async move {
+                    GitHub::find(chezmoi.search_path(), &chezmoi.options().env)
+                        .and_then(|gh| gh.account().ok().flatten())
+                        .map_or(GitHubState::Unavailable, GitHubState::LoggedIn)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.github = state;
+                cx.notify();
+            });
+        });
+    }
+
+    /// Connects the shared version to an empty repository at `url` and
+    /// uploads it.
+    pub fn connect(&mut self, url: String, cx: &mut Context<Self>) {
+        self.run_connect(
+            tr("Uploading", "正在上传"),
+            move |chezmoi| chezmoi.connect_shared(&url),
+            cx,
+        );
+    }
+
+    /// Creates a private GitHub repository called `name`, then connects to
+    /// it and uploads.
+    pub fn create_github_repo(&mut self, name: String, cx: &mut Context<Self>) {
+        self.run_connect(
+            tr("Creating the repository", "正在创建仓库"),
+            move |chezmoi| {
+                let gh = GitHub::find(chezmoi.search_path(), &chezmoi.options().env).ok_or_else(
+                    || Error::InvalidRequest("the GitHub CLI (gh) is not installed".into()),
+                )?;
+                let url = gh.create_private_repo(&name).map_err(|err| {
+                    if err.stderr().is_some_and(|e| e.contains("already exists")) {
+                        Error::InvalidRequest(tr(
+                            format!("Your GitHub account already has a repository called {name}. Choose another name; if you created it just now, paste its address below instead."),
+                            format!("你的 GitHub 账号里已经有叫 {name} 的仓库。请换个名字；如果是刚才创建的，把它的地址粘贴到下面即可。"),
+                        ))
+                    } else {
+                        err
+                    }
+                })?;
+                chezmoi.connect_shared(&url)
+            },
+            cx,
+        );
+    }
+
+    fn run_connect(
+        &mut self,
+        label: impl Into<SharedString>,
+        operation: impl FnOnce(&Chezmoi) -> chezmate_core::Result<()> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.connect_error = None;
+        self.run_with(
+            label,
+            move |chezmoi| operation(chezmoi).map_err(|err| remote_message(&err)),
+            |this, result, cx| match result {
+                Ok(()) => {
+                    cx.emit(DotfilesEvent::Finished(Ok(tr(
+                        "Connected. Your other computers can now get these files.".to_string(),
+                        "已连接并上传，其他电脑现在可以取回这些文件了".to_string(),
+                    ))));
+                    cx.emit(DotfilesEvent::Connected);
+                }
+                Err(err) => this.connect_error = Some(err),
+            },
+            cx,
+        );
+    }
+
     /// Runs `chezmoi doctor` on demand; it can be slow (see Core).
     pub fn run_doctor(&mut self, cx: &mut Context<Self>) {
         let Ok(chezmoi) = self.chezmoi.clone() else {
@@ -610,6 +946,49 @@ fn first_line(message: &str) -> String {
         .map_or(line, |(_, rest)| rest)
         .trim()
         .to_string()
+}
+
+/// A failed clone or upload, explained.
+fn remote_message(err: &Error) -> String {
+    // Git's own explanation, not the "Cloning into …" line before it.
+    let detail = err
+        .stderr()
+        .and_then(|stderr| {
+            stderr.lines().map(str::trim).find(|line| {
+                ["fatal:", "error:", "ERROR", "remote:"]
+                    .iter()
+                    .any(|p| line.starts_with(p))
+                    || line.contains("Permission denied")
+                    || line.contains("[rejected]")
+            })
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| first_line(&err.to_string()));
+    let hint = match remote_problem(err) {
+        Some(RemoteProblem::NotFound) => tr(
+            "The repository was not found, or this computer has no access to it. Check the address; for a private repository, log in to GitHub on this computer first (for example with `gh auth login`).",
+            "找不到这个仓库，或者这台电脑没有权限访问。请检查地址；私有仓库需要先在这台电脑上登录 GitHub（例如运行 `gh auth login`）。",
+        ),
+        Some(RemoteProblem::AccessDenied) => tr(
+            "The server refused access. Check that this computer's SSH key or login is added to your account.",
+            "服务器拒绝访问。请确认这台电脑的 SSH 密钥或登录信息已经加到你的账号里。",
+        ),
+        Some(RemoteProblem::Offline) => tr(
+            "Could not reach the server. Check the network and try again.",
+            "连不上服务器，请检查网络后再试。",
+        ),
+        Some(RemoteProblem::NotEmpty) => tr(
+            "This repository already has files. Use an empty repository, or start this computer from that repository instead.",
+            "这个仓库里已经有内容。请换一个空仓库；如果它就是你在别的电脑上的配置，应该用它来开始。",
+        ),
+        None => {
+            return match err {
+                Error::InvalidRequest(message) => message.clone(),
+                _ => err.to_string(),
+            };
+        }
+    };
+    format!("{hint} ({detail})")
 }
 
 fn decide_note(count: usize) -> String {
@@ -682,14 +1061,47 @@ fn describe(verb: &str, targets: &[String]) -> String {
     }
 }
 
-fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
+fn load(chezmoi: &Chezmoi, asked: &[ConfigQuestion]) -> Result<Loaded, String> {
     let info = chezmoi.info().map_err(|err| err.to_string())?;
     if !info.source_exists {
-        return Err(format!(
-            "The chezmoi source directory {} does not exist. Set up chezmoi with `chezmoi init` first.",
-            info.paths.source_dir.display()
-        ));
+        // With a config file, chezmoi was set up here and the shared
+        // version has gone missing (moved, or on a drive that is not
+        // connected). Starting over would replace that config.
+        if info.config_exists {
+            let (source, config) = (
+                info.paths.source_dir.display(),
+                info.paths.config_file.display(),
+            );
+            return Err(tr(
+                format!(
+                    "The shared version's folder {source} is missing, but chezmoi is set up on this computer ({config}). If it is on an external or network drive, connect it and press ⌘R. If it was moved, set sourceDir in the config file."
+                ),
+                format!(
+                    "找不到共享版本的文件夹 {source}，但这台电脑上已经设置过 chezmoi（{config}）。如果它在外接硬盘或网络盘上，请连接后按 ⌘R 刷新；如果它被移动了，请在配置文件里修改 sourceDir。"
+                ),
+            ));
+        }
+        return Ok(Loaded::Setup(Setup::Start {
+            source_dir: info.paths.source_dir.clone(),
+        }));
     }
+    // A template with questions and no config made from it yet. One with
+    // nothing to ask does not hold anything up.
+    if info.config_template.is_some() && !info.config_exists {
+        let mut questions = chezmoi.config_questions().map_err(|err| err.to_string())?;
+        for question in asked {
+            if !questions.iter().any(|q| q.prompt == question.prompt) {
+                questions.push(question.clone());
+            }
+        }
+        if !questions.is_empty() {
+            return Ok(Loaded::Setup(Setup::Questions(questions)));
+        }
+    }
+    load_snapshot(chezmoi, info).map(|snapshot| Loaded::Ready(Box::new(snapshot)))
+}
+
+fn load_snapshot(chezmoi: &Chezmoi, info: Info) -> Result<Snapshot, String> {
     let managed = chezmoi.managed().map_err(|err| err.to_string())?;
     let all_status = chezmoi
         .status_with(&managed)
@@ -746,6 +1158,12 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
             .unwrap_or_default()
     };
 
+    let suggestions = if overview.managed_files == 0 {
+        chezmoi.suggestions(&managed).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     Ok(Snapshot {
         info,
         status,
@@ -757,6 +1175,7 @@ fn load(chezmoi: &Chezmoi) -> Result<Snapshot, String> {
         repo,
         overview,
         local_diffs,
+        suggestions,
     })
 }
 
@@ -774,6 +1193,7 @@ fn by_path(files: Vec<DiffFile>) -> HashMap<SharedString, DiffFile> {
 fn load_repo(chezmoi: &Chezmoi) -> Result<Repo, String> {
     let git = chezmoi.git().map_err(|err| err.to_string())?;
     let status = git.status().map_err(|err| err.to_string())?;
+    let remotes = git.remotes().map_err(|err| err.to_string())?;
     let log = git.log(HISTORY_LENGTH).map_err(|err| err.to_string())?;
     let (diffs, diff_error) = if status.is_clean() {
         (Vec::new(), None)
@@ -788,6 +1208,7 @@ fn load_repo(chezmoi: &Chezmoi) -> Result<Repo, String> {
     };
     Ok(Repo {
         status,
+        remotes,
         log,
         diffs,
         diff_error,
@@ -800,8 +1221,13 @@ mod tests {
     use chezmate_core::ApplyOptions;
     use std::fs;
 
-    /// chezmoi's diff includes directories (header only), symlinks, scripts
-    /// and templates; all of them must parse and line up with status paths.
+    fn ready(chezmoi: &Chezmoi) -> Snapshot {
+        match load(chezmoi, &[]).unwrap() {
+            Loaded::Ready(snapshot) => *snapshot,
+            Loaded::Setup(setup) => panic!("setup needed: {setup:?}"),
+        }
+    }
+
     #[test]
     fn first_line_drops_the_command() {
         assert_eq!(
@@ -813,6 +1239,8 @@ mod tests {
         assert_eq!(first_line("plain"), "plain");
     }
 
+    /// chezmoi's diff includes directories (header only), symlinks, scripts
+    /// and templates; all of them must parse and line up with status paths.
     #[test]
     fn diff_of_every_entry_kind_parses() {
         let root = tempfile::tempdir().unwrap();
@@ -840,7 +1268,7 @@ mod tests {
         })
         .unwrap();
 
-        let snapshot = load(&chezmoi).unwrap();
+        let snapshot = ready(&chezmoi);
         assert_eq!(snapshot.diff_error, None);
         for entry in &snapshot.status {
             assert!(
@@ -855,7 +1283,7 @@ mod tests {
         fs::write(source.join("dot_hello"), "hello\nmore\n").unwrap();
         fs::remove_file(home.join(".profile")).unwrap();
         fs::rename(source.join("executable_dot_tool"), source.join("dot_tool")).unwrap();
-        let snapshot = load(&chezmoi).unwrap();
+        let snapshot = ready(&chezmoi);
         assert_eq!(snapshot.diff_error, None);
         // run_once ran; the every-apply script is never pending.
         assert!(
@@ -874,7 +1302,7 @@ mod tests {
     #[ignore]
     fn real_setup_loads() {
         let chezmoi = Chezmoi::new(ChezmoiOptions::default()).unwrap();
-        let snapshot = load(&chezmoi).unwrap();
+        let snapshot = ready(&chezmoi);
         println!(
             "status {} · managed {} · diffs {} · diff error {:?}",
             snapshot.status.len(),

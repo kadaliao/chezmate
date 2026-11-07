@@ -14,7 +14,7 @@ use gpui_kit::{
 use tempfile::TempDir;
 
 use crate::app::{Chezmate, Page};
-use crate::model::DotfilesEvent;
+use crate::model::{DotfilesEvent, Setup};
 use crate::overview::Selection;
 use chezmate_core::FileState;
 
@@ -1126,4 +1126,323 @@ fn demo_mode_has_files_in_every_state(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let log = fs::read_to_string(base.join("home/demo.log")).unwrap();
     assert!(log.contains("KeyRepeat 2"), "{log}");
+}
+
+/// A computer where chezmoi was never used: no source directory, no config
+/// file, and git without an identity.
+struct NewComputer {
+    _root: TempDir,
+    base: PathBuf,
+    home: PathBuf,
+    source: PathBuf,
+    options: ChezmoiOptions,
+}
+
+impl NewComputer {
+    fn new(files: &[(&str, &str)]) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().canonicalize().unwrap();
+        let home = base.join("home");
+        fs::create_dir_all(&home).unwrap();
+        for (path, contents) in files {
+            let path = home.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let gitconfig = base.join("gitconfig");
+        fs::write(&gitconfig, "[init]\n\tdefaultBranch = main\n").unwrap();
+        // Identity for the helper that plays the other computer.
+        fs::write(
+            base.join("helper-gitconfig"),
+            "[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n",
+        )
+        .unwrap();
+        let options = ChezmoiOptions {
+            source: Some(base.join("source")),
+            destination: Some(home.clone()),
+            config: Some(base.join("config/chezmoi.toml")),
+            persistent_state: Some(base.join("config/state.boltdb")),
+            cache: Some(base.join("cache")),
+            env: vec![
+                ("HOME".into(), home.clone().into()),
+                // No gh here, so GitHub is never asked.
+                ("PATH".into(), "/usr/bin:/bin".into()),
+                ("GIT_CONFIG_GLOBAL".into(), gitconfig.into()),
+                ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+            ],
+            ..Default::default()
+        };
+        Self {
+            source: base.join("source"),
+            _root: root,
+            base,
+            home,
+            options,
+        }
+    }
+
+    /// A bare repository; with files, as another computer uploaded them.
+    fn remote(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let config = self.base.join("helper-gitconfig");
+        let remote = self.base.join(name);
+        git(
+            &self.base,
+            &config,
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        if files.is_empty() {
+            return remote;
+        }
+        let work = self.base.join(format!("{name}-work"));
+        git(
+            &self.base,
+            &config,
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        );
+        for (path, contents) in files {
+            fs::write(work.join(path), contents).unwrap();
+        }
+        git(&work, &config, &["add", "-A"]);
+        git(&work, &config, &["commit", "-q", "-m", "Initial"]);
+        git(&work, &config, &["push", "-q", "origin", "main"]);
+        remote
+    }
+}
+
+fn setup_of(view: &Entity<Chezmate>, cx: &mut TestAppContext) -> Option<Setup> {
+    cx.read(|cx| view.read(cx).model().read(cx).setup().cloned())
+}
+
+/// Types `text` into the input with this ID.
+fn type_into(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &str, text: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(SharedString::from(id.to_string()), cx);
+        window.input(text, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// The first computer: start a shared version, pick files, upload.
+#[gpui_kit::test]
+fn new_computer_picks_files_and_uploads(cx: &mut TestAppContext) {
+    let pc = NewComputer::new(&[
+        (".zshrc", "export EDITOR=vim\n"),
+        (".gitconfig", "[user]\n\tname = Me\n"),
+        (".vimrc", "set number\n"),
+    ]);
+    let remote = pc.remote("remote.git", &[]);
+    let (handle, view) = open_with(cx, pc.options.clone());
+    assert!(
+        matches!(setup_of(&view, cx), Some(Setup::Start { .. })),
+        "{:?}",
+        setup_of(&view, cx)
+    );
+
+    click(cx, handle, &["start-new"]);
+    assert_eq!(setup_of(&view, cx), None);
+    assert!(pc.source.join(".git").is_dir());
+    let suggested: Vec<String> = cx.read(|cx| {
+        let model = view.read(cx).model().read(cx);
+        let snapshot = model.snapshot().expect("loaded");
+        assert!(snapshot.is_empty());
+        snapshot
+            .suggestions
+            .iter()
+            .map(|s| s.target.clone())
+            .collect()
+    });
+    assert_eq!(suggested, [".zshrc", ".gitconfig", ".vimrc"]);
+
+    // Leave .vimrc out.
+    click(cx, handle, &["suggest:.vimrc"]);
+    click(cx, handle, &["add-suggested"]);
+    let managed: Vec<String> = cx.read(|cx| {
+        let model = view.read(cx).model().read(cx);
+        let snapshot = model.snapshot().expect("loaded");
+        assert!(snapshot.needs_remote());
+        snapshot.managed.iter().map(|e| e.target.clone()).collect()
+    });
+    assert_eq!(managed, [".gitconfig", ".zshrc"]);
+    assert!(!pc.source.join("dot_vimrc").exists());
+
+    click(cx, handle, &["open-connect"]);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+    type_into(
+        cx,
+        handle,
+        "repo-url",
+        &format!("file://{}", remote.display()),
+    );
+    click(cx, handle, &["connect-url"]);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            !window.has_active_dialog(cx),
+            "the dialog closes once uploaded"
+        );
+    })
+    .unwrap();
+    let config = pc.base.join("helper-gitconfig");
+    let pushed = git(&remote, &config, &["ls-tree", "--name-only", "main"]);
+    assert_eq!(
+        pushed.split_whitespace().collect::<Vec<_>>(),
+        ["dot_gitconfig", "dot_zshrc"]
+    );
+    cx.read(|cx| {
+        let model = view.read(cx).model().read(cx);
+        let snapshot = model.snapshot().expect("loaded");
+        assert!(!snapshot.needs_remote());
+        assert!(
+            snapshot.overview.is_synced(),
+            "{:?}",
+            snapshot.overview.shared
+        );
+    });
+}
+
+/// A second computer: get the shared version, answer the template's
+/// questions, and see what a sync would do.
+#[gpui_kit::test]
+fn second_computer_fetches_and_answers_questions(cx: &mut TestAppContext) {
+    let pc = NewComputer::new(&[(".gitconfig", "[user]\n\tname = Old\n")]);
+    let template = r#"{{- $email := promptStringOnce . "email" "Email address" -}}
+{{- $work := promptBoolOnce . "work" "Is this a work computer" false -}}
+[data]
+  email = {{ $email | quote }}
+  work = {{ $work }}
+"#;
+    let remote = pc.remote(
+        "remote.git",
+        &[
+            (".chezmoi.toml.tmpl", template),
+            ("dot_gitconfig.tmpl", "[user]\n\temail = {{ .email }}\n"),
+            ("dot_zshrc", "export EDITOR=vim\n"),
+        ],
+    );
+    let (handle, view) = open_with(cx, pc.options.clone());
+
+    // A wrong address explains itself and leaves nothing behind.
+    type_into(
+        cx,
+        handle,
+        "repo-input",
+        &format!("file://{}/missing.git", pc.base.display()),
+    );
+    click(cx, handle, &["start-from"]);
+    assert!(matches!(setup_of(&view, cx), Some(Setup::Start { .. })));
+    let error = cx.read(|cx| {
+        view.read(cx)
+            .model()
+            .read(cx)
+            .setup_error()
+            .map(str::to_string)
+    });
+    assert!(error.is_some_and(|e| e.contains("missing.git")));
+    assert!(!pc.source.exists());
+
+    // The real address, typed into a fresh window.
+    let (handle, view) = open_with(cx, pc.options.clone());
+    type_into(
+        cx,
+        handle,
+        "repo-input",
+        &format!("file://{}", remote.display()),
+    );
+    click(cx, handle, &["start-from"]);
+    let Some(Setup::Questions(questions)) = setup_of(&view, cx) else {
+        panic!("expected questions: {:?}", setup_of(&view, cx));
+    };
+    assert_eq!(questions.len(), 2);
+    assert!(
+        !pc.home.join(".zshrc").exists(),
+        "nothing changes in the home folder yet"
+    );
+
+    type_into(cx, handle, "question-0-input", "me@example.com");
+    click(cx, handle, &["question-1-switch"]);
+    click(cx, handle, &["answer"]);
+    assert_eq!(setup_of(&view, cx), None);
+    let config = fs::read_to_string(pc.base.join("config/chezmoi.toml")).unwrap();
+    assert!(config.contains("me@example.com"), "{config}");
+    assert!(config.contains("work = true"), "{config}");
+
+    let files = overview_files(&view, cx);
+    assert!(
+        files.contains(&(".zshrc".to_string(), FileState::UpdateAvailable)),
+        "{files:?}"
+    );
+    assert!(
+        files.contains(&(".gitconfig".to_string(), FileState::BothChanged)),
+        "{files:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn missing_chezmoi_explains_how_to_install(cx: &mut TestAppContext) {
+    let pc = NewComputer::new(&[]);
+    let mut options = pc.options.clone();
+    options.binary = Some(pc.base.join("no-chezmoi-here"));
+    let (handle, view) = open_with(cx, options);
+    assert!(matches!(setup_of(&view, cx), Some(Setup::NoChezmoi(_))));
+    click(cx, handle, &["recheck"]);
+    assert!(matches!(setup_of(&view, cx), Some(Setup::NoChezmoi(_))));
+}
+
+/// Someone already set up, whose shared version's folder is missing (an
+/// unplugged drive): an explanation, not the welcome page that could
+/// replace their config.
+#[gpui_kit::test]
+fn a_missing_source_folder_is_not_a_new_computer(cx: &mut TestAppContext) {
+    let pc = NewComputer::new(&[]);
+    let config = pc.base.join("config/chezmoi.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[data]\n  keep = true\n").unwrap();
+    let (_, view) = open_with(cx, pc.options.clone());
+    assert_eq!(setup_of(&view, cx), None);
+    let error = cx.read(|cx| view.read(cx).model().read(cx).error().map(str::to_string));
+    assert!(
+        error.as_deref().is_some_and(|e| e.contains("sourceDir")),
+        "{error:?}"
+    );
+}
+
+/// A shared version with a remote but no tracking branch is not offered
+/// an upload, which would replace that remote.
+#[gpui_kit::test]
+fn a_remote_without_tracking_is_left_alone(cx: &mut TestAppContext) {
+    let pc = NewComputer::new(&[(".zshrc", "x\n")]);
+    let chezmoi = Chezmoi::new(pc.options.clone()).unwrap();
+    chezmoi.start_new().unwrap();
+    chezmoi
+        .add(&[".zshrc".into()], &chezmate_core::AddOptions::default())
+        .unwrap();
+    let (_, view) = open_with(cx, pc.options.clone());
+    let needs = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let model = view.read(cx).model().read(cx);
+            model.snapshot().expect("loaded").needs_remote()
+        })
+    };
+    assert!(needs(cx));
+    let config = pc.base.join("helper-gitconfig");
+    git(
+        &pc.source,
+        &config,
+        &["remote", "add", "origin", "git@example.com:me/dots.git"],
+    );
+    cx.update(|cx| {
+        let model = view.read(cx).model().clone();
+        model.update(cx, |model, cx| model.refresh(cx));
+    });
+    cx.run_until_parked();
+    assert!(!needs(cx));
 }

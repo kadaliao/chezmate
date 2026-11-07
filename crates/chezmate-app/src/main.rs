@@ -10,6 +10,7 @@ mod language;
 mod model;
 mod overview;
 mod repository;
+mod setup;
 mod viewer;
 
 use chezmate_core::ChezmoiOptions;
@@ -30,7 +31,10 @@ fn main() {
             }
         }
     } else {
-        ChezmoiOptions::default()
+        ChezmoiOptions {
+            fallback_binary: bundled_chezmoi(),
+            ..Default::default()
+        }
     };
     gpui_kit::application()
         .with_assets(assets::AppAssets)
@@ -51,6 +55,14 @@ fn main() {
             .expect("failed to open the Chezmate window");
             cx.activate(true);
         });
+}
+
+/// The chezmoi shipped inside Chezmate.app (`Contents/Helpers/chezmoi`),
+/// used when none is installed.
+fn bundled_chezmoi() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let helper = exe.parent()?.parent()?.join("Helpers/chezmoi");
+    helper.is_file().then_some(helper)
 }
 
 #[cfg(test)]

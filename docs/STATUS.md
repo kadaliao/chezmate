@@ -12,10 +12,29 @@
 | 3 | Git：源仓库状态、提交、拉取、推送 | 完成 |
 | 4 | MCP 服务（`chezmate mcp`，stdio） | 完成 |
 | 5 | 新手简化模型：每个文件一种状态 + 一个「同步」（Core、GUI 概览页、CLI、MCP），中英双语 | 完成 |
+| 6 | 新手引导：没装 chezmoi、没有源目录、配置模板提问、选第一批文件、上传到 GitHub（Core、GUI；应用自带 chezmoi） | 完成 |
 
 ## 下一步
 
 见 [HANDOFF.md](HANDOFF.md)。
+
+## 已实现（新手引导）
+
+2026-11-07 用户要求：没用过 chezmoi、没有源目录的人打开应用也要顺利开始。与用户确认：应用自带 chezmoi；共享位置用 `gh` 一键建私有仓库，或粘贴空仓库地址。
+
+| 情况 | 应用里看到的 | Core |
+| --- | --- | --- |
+| 找不到 chezmoi | 全屏说明（`brew install chezmoi`、复制按钮、官网链接、「重新检查」）。发布的应用在 `Contents/Helpers/chezmoi` 自带一份，`PATH` 里找不到时用它，所以正常不会出现 | `ChezmoiOptions::fallback_binary` |
+| 没有源目录（也没有配置文件；有配置文件说明源目录被移动或在没接上的硬盘里，显示说明而不是欢迎页，取回也会拒绝，以免覆盖配置） | 欢迎页两张卡片：「这是我的第一台电脑」→ `chezmoi init`；「我已经在别的电脑上用过」→ 输入 GitHub 用户名或地址 → `chezmoi init <仓库>`（不 apply）。失败时就地说明原因（找不到 / 没权限 / 连不上），不留下空目录 | `start_new`、`start_from`（简写先按 `gh` 设置的协议试，「找不到 / 拒绝」时换另一种）、`remote_problem` |
+| 配置模板有问题要问（有模板、没有配置文件、有问题） | 表单：文字、数字、是 / 否开关、单选、多选；「继续」= 带答案再跑一次 `chezmoi init`；chezmoi 问了模板里看不出来的问题（文字由模板计算）时，按它打印的提示加进表单；「跳过」写一个空配置。模板里有 `stdinIsATTY` 时不预先列问题：没有终端时它本来就用默认值，只问 chezmoi 真正问到的 | `parse_questions`、`config_questions`、`init_config`、`unanswered_question`（先读调用本身，读不出时用 stdout 里的提示）、`skip_config`。答案参数：同类答案合成一个 CSV 记录，必要时补一个占位键 `__chezmate=1`，因为只有一个 `=` 时 chezmoi 的参数解析器只去掉两端引号、不按 CSV 读；数字参数不支持引号，问题里有 `,` / `=` 时直接拒绝 |
+| 源目录里还没有文件 | 概览页换成「选择要同步的文件」：家目录里常见配置文件的勾选列表（按 Shell / Git / 编辑器 / 终端 / SSH 分组），也可以用文件选择器选其他文件 | `suggestions`（跳过符号链接、空文件、超过 1 MB 的文件、超过 200 个文件或 4 MB 的文件夹、git 仓库；`.npmrc`、`.netrc`、密钥不在候选里） |
+| 有文件但没有任何远端（有远端但没设跟踪分支的不算，不提示） | 概览页左上提示「只在这台电脑上」+「上传到 GitHub…」对话框：`gh` 已登录时一键新建私有仓库（名字默认 `dotfiles`）并上传；否则打开 GitHub 新建页面，粘贴空仓库地址上传 | `connect_shared`（不是仓库时先 `git init`；已有指向别处的 `origin` 时拒绝；提交，加 `origin`，`push --set-upstream`；上传失败时去掉刚加的 `origin`）、`GitHub`（`gh api user`、`gh repo create --private`、`git_protocol`） |
+
+其他：git 推断不出提交身份时（新电脑上常见），`Git::commit_all` 只为这一次提交加 `-c user.name / user.email`（`$USER@主机名`），不写进任何配置，之后设置的身份或按远端地址生效的 `includeIf` 身份照常起作用；chezmoi 启动的 git 设置 `GIT_TERMINAL_PROMPT=0`，克隆私有仓库时不会卡在终端提问；设置过程中的错误在进入概览后作为通知显示，不会随页面消失。独立审查（2026-11-07）后据此修正了：上传对话框会替换已有远端、计算出的问题问不到、答案引号编码、身份写进仓库配置、源目录丢失时出现欢迎页。
+
+测试：`chezmate-core/tests/setup.rs` 用两台沙箱电脑和本地裸仓库，覆盖新建 → 添加 → 连接 → 另一台取回（提交身份不写入配置）、模板提问（逗号和引号、漏答、文字由模板计算的问题）、`stdinIsATTY` 模板、已有配置时拒绝取回、跳过、失败的取回不留目录、远端已有内容被拒且不留 `origin`、不替换已有远端、源目录不是仓库、文件建议；单元测试覆盖模板解析、错误识别、`gh` 输出解析、自带 chezmoi 的查找顺序。GUI：无头窗口测试走完「第一台电脑」（开始 → 取消一个勾选 → 添加 → 粘贴地址上传 → 对话框关闭、远端有文件）和「第二台电脑」（错误地址的提示 → 正确地址 → 回答问题 → 概览显示待同步文件）以及缺少 chezmoi、源目录丢失时不显示欢迎页、有远端时不提示上传；`--test screenshots` 离屏截图检查了各个画面（中文、浅色，欢迎页另看了深色）。
+
+没有验证的：`gh repo create` 一键建库没有端到端测试（会在真实 GitHub 账号里建仓库），只测了参数和输出解析；没装 Xcode 命令行工具的 Mac 上 `/usr/bin/git` 只是一个会弹安装框的占位程序，Chezmate 目前不单独处理；发布脚本里下载、校验、签名自带 chezmoi 的步骤单独跑过，完整打包、公证留到下次发版。
 
 ## 已实现（简化模型）
 
@@ -118,7 +137,8 @@ GUI 测试在沙箱里驱动真实 GPUI Kit 组件和真实 chezmoi（点击、�
 - 从 Finder 启动的应用 `PATH` 很短，Core 会为子进程补上 `/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等目录，以便 chezmoi 找到 gpg、git；
 - GUI 已在 macOS 浅色模式下用真实配置截图检查四个页面（2026-11-07），并据此调整：普通目录不单独列出、列表行统一两行、Files 详情的操作移到信息下方、加密文件改为在 Finder 中显示源文件。深色模式、Linux、Windows 尚未检查；
 - 启用 GPUI Kit 的 `test-support` 后，`gpui-fast` 的精确版本要求与默认解析结果冲突（taffy 等），因此 Cargo.lock 以上游 gpui-kit v0.9.0 的锁文件为基础生成。升级 gpui-kit 时应同样参照上游锁文件；
-- 简化界面（概览、同步、侧栏、状态栏）和「文件」「环境」页中英双语；其余高级页面（Changes、Repository）只有英文；
+- 简化界面（概览、同步、侧栏、状态栏、新手引导）和「文件」「环境」页中英双语；其余高级页面（Changes、Repository）只有英文；
+- 新手引导的「一键在 GitHub 上建库」依赖 GitHub CLI（`gh`）已登录；HTTPS 地址的推送需要 git 能拿到凭据（`gh auth setup-git` 或钥匙串），SSH 地址需要 ssh-agent 里有密钥；
 - 配置文件写坏后，chezmoi 连路径都读不出来。应用开着时环境页保留上次的内容并显示错误，可以直接改回；但写坏后重新启动应用，环境页只能显示错误，需要在别处修好配置；
 - 语法高亮用 GPUI Kit 的 `syntect` 特性（纯 Rust，bat 的语法集合，约 200 种语言）；Shell 配置、`.gitconfig`、`~/.ssh/config`、无扩展名但有 `#!` 的脚本按名字或首行识别（`src/language.rs`）；
 - GPUI Kit 默认只打包组件用到的图标，文件页额外用到的 Lucide 图标在 `src/assets.rs` 里用 `icon_assets!` 加入；

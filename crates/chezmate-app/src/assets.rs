@@ -1,4 +1,5 @@
-//! Icons: GPUI Kit's default set plus the Lucide icons the Files page uses.
+//! Icons: GPUI Kit's default set plus the Lucide icons the Files and setup
+//! pages use.
 
 use std::borrow::Cow;
 
@@ -9,6 +10,8 @@ gpui_kit::assets::icon_assets!(
     [
         Braces,
         ChevronsDownUp,
+        CloudDownload,
+        CloudUpload,
         Copy,
         FileCode,
         FileCog,
@@ -23,6 +26,8 @@ gpui_kit::assets::icon_assets!(
         FolderSearch,
         FolderTree,
         House,
+        Laptop,
+        ListChecks,
         Lock,
         Pencil,
         Save,

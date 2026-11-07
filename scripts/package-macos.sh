@@ -1,11 +1,15 @@
 #!/bin/sh
 # Builds the release binaries and packs them for a GitHub release:
-#   dist/Chezmate-<version>-macos-<arch>.zip      the desktop app
+#   dist/Chezmate-<version>-macos-<arch>.zip      the desktop app, with chezmoi
+#                                                 inside for computers without it
 #   dist/chezmate-<version>-macos-<arch>.tar.gz   the command line (and MCP server)
 #   dist/SHA256SUMS
 #
 # Signing: the first "Developer ID Application" identity in the keychain, or
 # CHEZMATE_SIGN_IDENTITY; ad hoc when there is none.
+# chezmoi: the official release CHEZMATE_CHEZMOI_VERSION (default below),
+# checked against its published SHA-256, goes to Contents/Helpers/chezmoi.
+# The app uses it only when no chezmoi is installed.
 # Notarization: set CHEZMATE_NOTARY_PROFILE to a notarytool keychain profile,
 # made once with `xcrun notarytool store-credentials <profile>`. Without it
 # the build is signed but not notarized, and macOS asks before the first
@@ -17,6 +21,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
 arch=$(uname -m)
+chezmoi_version=${CHEZMATE_CHEZMOI_VERSION:-2.73.3}
 dist=dist
 app="$dist/Chezmate.app"
 cli="$dist/cli/chezmate"
@@ -58,6 +63,24 @@ rm -rf "$dist"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$(dirname "$cli")" "$work"
 cp target/release/chezmate-app "$app/Contents/MacOS/chezmate-app"
 cp target/release/chezmate "$cli"
+
+case "$arch" in
+arm64) chezmoi_arch=arm64 ;;
+x86_64) chezmoi_arch=amd64 ;;
+*) echo "no chezmoi release for $arch" >&2; exit 1 ;;
+esac
+chezmoi_name="chezmoi-darwin-$chezmoi_arch"
+chezmoi_url="https://github.com/twpayne/chezmoi/releases/download/v$chezmoi_version"
+curl -fsSL -o "$work/$chezmoi_name" "$chezmoi_url/$chezmoi_name"
+curl -fsSL -o "$work/chezmoi-checksums.txt" "$chezmoi_url/chezmoi_${chezmoi_version}_checksums.txt"
+expected=$(awk -v name="$chezmoi_name" '$2 == name { print $1 }' "$work/chezmoi-checksums.txt")
+actual=$(shasum -a 256 "$work/$chezmoi_name" | awk '{ print $1 }')
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+    echo "chezmoi $chezmoi_version: checksum mismatch (expected '$expected', got '$actual')" >&2
+    exit 1
+fi
+mkdir -p "$app/Contents/Helpers"
+install -m 755 "$work/$chezmoi_name" "$app/Contents/Helpers/chezmoi"
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -80,6 +103,8 @@ EOF
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 # Extended attributes would end up in the zip as ._ files inside the bundle.
 xattr -cr "$app" "$cli"
+# Nested code first: the app's signature covers the helper's.
+sign "$app/Contents/Helpers/chezmoi"
 sign "$app"
 sign "$cli"
 

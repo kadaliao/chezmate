@@ -35,6 +35,7 @@ use gpui_kit::{
 use crate::changes::{SelectNext, SelectPrevious, error_state, loading_state};
 use crate::i18n::tr;
 use crate::model::{Dotfiles, DotfilesEvent, Prepared, Snapshot};
+use crate::setup::{ConnectView, GetStarted};
 
 /// A row of the overview list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +324,8 @@ pub struct OverviewView {
     /// The snapshot and selection the diff state currently displays.
     shown: Option<(usize, Option<Selection>)>,
     list_focus: FocusHandle,
+    /// Shown while nothing is synced yet.
+    get_started: Entity<GetStarted>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -336,19 +339,23 @@ impl OverviewView {
             cx.subscribe_in(
                 &model,
                 window,
-                |this, _, event: &DotfilesEvent, window, cx| {
-                    if let DotfilesEvent::SyncReady(prepared) = event {
+                |this, _, event: &DotfilesEvent, window, cx| match event {
+                    DotfilesEvent::SyncReady(prepared) => {
                         this.review(prepared.clone(), window, cx);
                     }
+                    DotfilesEvent::Connected => window.close_dialog(cx),
+                    _ => {}
                 },
             ),
         ];
+        let get_started = cx.new(|cx| GetStarted::new(model.clone(), cx));
         let mut this = Self {
             model,
             selected: None,
             diff,
             shown: None,
             list_focus,
+            get_started,
             _subscriptions: subscriptions,
         };
         this.sync_selection(cx);
@@ -452,6 +459,18 @@ impl OverviewView {
         });
     }
 
+    /// Opens the dialog that uploads the shared version to a new or empty
+    /// repository.
+    pub fn open_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let connect = cx.new(|cx| ConnectView::new(self.model.clone(), window, cx));
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog
+                .title(tr("Upload to GitHub", "上传到 GitHub"))
+                .width(px(560.))
+                .child(connect.clone())
+        });
+    }
+
     /// Asks `question`, then runs `action` on the model if confirmed.
     fn confirm(
         &self,
@@ -510,12 +529,44 @@ impl OverviewView {
                             .child(headline(overview)),
                     ),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(shared_line(overview.shared.as_ref())),
-            )
+            .map(|this| {
+                if !snapshot.needs_remote() {
+                    return this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(shared_line(overview.shared.as_ref())),
+                    );
+                }
+                // Synced files that only this computer has: the next step
+                // is a place the other computers can get them from.
+                this.child(
+                    v_flex()
+                        .gap_2()
+                        .p_3()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().background)
+                        .child(
+                            div().text_xs().child(tr(
+                                "These files are only on this computer. Upload them to GitHub so your other computers can get them.",
+                                "这些文件目前只在这台电脑上。上传到 GitHub 后，其他电脑才能取回。",
+                            )),
+                        )
+                        .child(
+                            Button::new("open-connect")
+                                .outline()
+                                .small()
+                                .icon(IconName::Github)
+                                .label(tr("Upload to GitHub…", "上传到 GitHub…"))
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_connect(window, cx);
+                                })),
+                        ),
+                )
+            })
             .child(
                 Button::new("sync")
                     .primary()
@@ -1111,6 +1162,9 @@ impl Render for OverviewView {
                 None => loading_state(cx),
             };
         };
+        if snapshot.is_empty() {
+            return self.get_started.clone().into_any_element();
+        }
         let rem = window.rem_size();
         v_flex()
             .size_full()

@@ -39,6 +39,8 @@ mod model;
 mod overview;
 #[path = "../src/repository.rs"]
 mod repository;
+#[path = "../src/setup.rs"]
+mod setup;
 #[path = "../src/viewer.rs"]
 mod viewer;
 
@@ -233,6 +235,8 @@ fn main() {
     });
     shoot(&mut cx, "environment-diagnostics");
 
+    shoot_setup(&mut cx, &out, &base);
+
     // Offline: the remote is gone.
     fs::remove_dir_all(base.join("remote.git")).unwrap();
     cx.update(|cx| {
@@ -241,4 +245,163 @@ fn main() {
         model.update(cx, |model, cx| model.prepare_sync(cx));
     });
     shoot(&mut cx, "sync-review-offline");
+}
+
+fn git(dir: &Path, gitconfig: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", gitconfig)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+/// A computer that has never used chezmoi, in `dir`.
+fn new_computer(dir: &Path, files: &[(&str, &str)]) -> ChezmoiOptions {
+    let home = dir.join("home");
+    for (path, contents) in files {
+        let path = home.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+    fs::create_dir_all(&home).unwrap();
+    let gitconfig = dir.join("gitconfig");
+    fs::write(
+        &gitconfig,
+        "[user]\n\tname = Demo\n\temail = demo@example.com\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    ChezmoiOptions {
+        source: Some(dir.join("source")),
+        destination: Some(home.clone()),
+        config: Some(dir.join("config/chezmoi.toml")),
+        persistent_state: Some(dir.join("config/state.boltdb")),
+        cache: Some(dir.join("cache")),
+        env: vec![
+            ("HOME".into(), home.into()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("GIT_CONFIG_GLOBAL".into(), gitconfig.into()),
+            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+        ],
+        ..Default::default()
+    }
+}
+
+/// The first-run screens.
+fn shoot_setup(cx: &mut VisualTestAppContext, out: &Path, base: &Path) {
+    let open = |cx: &mut VisualTestAppContext, options: ChezmoiOptions| {
+        let mut built = None;
+        let window = cx
+            .open_offscreen_window(size(px(1180.), px(760.)), |window, cx| {
+                let view = cx.new(|cx| Chezmate::new(options, window, cx));
+                built = Some(view.clone());
+                cx.new(|cx| gpui_kit::base::Root::new(view, window, cx))
+            })
+            .unwrap();
+        cx.run_until_parked();
+        (gpui_kit::AnyWindowHandle::from(window), built.unwrap())
+    };
+    let shoot = |cx: &mut VisualTestAppContext, handle: gpui_kit::AnyWindowHandle, name: &str| {
+        cx.run_until_parked();
+        for _ in 0..10 {
+            cx.advance_clock(std::time::Duration::from_millis(50));
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+        let image = cx.capture_screenshot(handle).unwrap();
+        let path = out.join(format!("{name}.png"));
+        image.save(&path).unwrap();
+        println!("{}", path.display());
+    };
+    let click = |cx: &mut VisualTestAppContext, handle: gpui_kit::AnyWindowHandle, id: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(gpui_kit::SharedString::from(id.to_string()), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+
+    // No chezmoi at all.
+    let mut missing = new_computer(&base.join("no-chezmoi"), &[]);
+    missing.binary = Some(base.join("no-chezmoi/none"));
+    let (handle, _) = open(cx, missing);
+    shoot(cx, handle, "setup-no-chezmoi");
+
+    // A first computer: welcome, pick files, upload.
+    let dir = base.join("first");
+    let options = new_computer(
+        &dir,
+        &[
+            (".zshrc", "export EDITOR=nvim\n"),
+            (".gitconfig", "[user]\n\tname = Demo\n"),
+            (".config/nvim/init.lua", "vim.o.number = true\n"),
+            (".config/nvim/lua/keys.lua", "-- keys\n"),
+            (".tmux.conf", "set -g mouse on\n"),
+            (".ssh/config", "Host *\n  AddKeysToAgent yes\n"),
+        ],
+    );
+    let (handle, view) = open(cx, options);
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let suffix = if mode == ThemeMode::Dark { "-dark" } else { "" };
+        cx.update(|cx| Theme::change(mode, None, cx));
+        shoot(cx, handle, &format!("setup-start{suffix}"));
+    }
+    cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    click(cx, handle, "start-new");
+    shoot(cx, handle, "setup-get-started");
+    click(cx, handle, "add-suggested");
+    shoot(cx, handle, "setup-only-here");
+    click(cx, handle, "open-connect");
+    shoot(cx, handle, "setup-connect");
+    cx.update(|cx| {
+        let model = view.read(cx).model().clone();
+        model.update(cx, |model, cx| {
+            model.set_github(model::GitHubState::LoggedIn("octocat".into()), cx)
+        });
+    });
+    shoot(cx, handle, "setup-connect-github");
+
+    // A second computer: the shared version's template has questions.
+    let dir = base.join("second");
+    fs::create_dir_all(&dir).unwrap();
+    let options = new_computer(&dir, &[(".gitconfig", "[user]\n\tname = Old\n")]);
+    let gitconfig = dir.join("gitconfig");
+    let remote = dir.join("remote.git");
+    git(
+        &dir,
+        &gitconfig,
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    let work = dir.join("work");
+    git(
+        &dir,
+        &gitconfig,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    fs::write(
+        work.join(".chezmoi.toml.tmpl"),
+        "{{- $email := promptStringOnce . \"email\" \"Email address for Git\" -}}\n{{- $work := promptBoolOnce . \"work\" \"Is this a work computer\" false -}}\n{{- $shell := promptChoiceOnce . \"shell\" \"Default shell\" (list \"zsh\" \"fish\" \"bash\") \"zsh\" -}}\n[data]\n  email = {{ $email | quote }}\n  work = {{ $work }}\n  shell = {{ $shell | quote }}\n",
+    )
+    .unwrap();
+    fs::write(work.join("dot_zshrc"), "export EDITOR=nvim\n").unwrap();
+    git(&work, &gitconfig, &["add", "-A"]);
+    git(&work, &gitconfig, &["commit", "-q", "-m", "Initial"]);
+    git(&work, &gitconfig, &["push", "-q", "origin", "main"]);
+    let (handle, view) = open(cx, options);
+    cx.update(|cx| {
+        let model = view.read(cx).model().clone();
+        model.update(cx, |model, cx| {
+            model.start_from(format!("file://{}", remote.display()), cx)
+        });
+    });
+    shoot(cx, handle, "setup-questions");
 }

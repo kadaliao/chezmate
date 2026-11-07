@@ -33,6 +33,12 @@
 
 再之后（同日）：诊断运行后可以「复制给 Agent」（`environment.rs` 的 `agent_report`），发布为 v0.1.2。之后加了演示模式（`--demo`，`src/demo.rs`），想看界面在各种状态下的样子时用它，不要用真实配置。
 
+### 之后：新手引导（2026-11-07 用户要求）
+
+用户问「没用过 chezmoi、没设过源目录的人打开软件能不能顺利开始」。和用户确认：应用自带 chezmoi；共享位置用 `gh` 一键建私有仓库，或粘贴空仓库地址。已完成：Core `setup.rs`（`start_new` / `start_from` / 模板问题 / `suggestions` / `connect_shared`）、`github.rs`；App `setup.rs`（`SetupView` 全屏欢迎页和问题表单、`GetStarted` 选文件、`ConnectView` 上传对话框），模型里 `Setup` 状态；发布脚本把校验过的官方 chezmoi 放进 `Contents/Helpers/chezmoi`。细节见 `docs/STATUS.md`「已实现（新手引导）」。
+
+验证到的 chezmoi 行为：`--no-tty` 且 stdin 关闭时，配置模板里的 `prompt*` 以 `error calling promptStringOnce: EOF` 失败，但克隆已经留下；之后不带仓库再跑 `chezmoi init --promptString "问题=答案"` 就能生成配置（答案按问题文字匹配，参数按 CSV 解析，含逗号要加引号；多选用 `/` 分隔）；`--promptDefaults` 对没有默认值的问题没用。克隆失败会留下空的源目录（Core 会删掉）。没有 git 身份时 `chezmoi add` 正常、`git commit` 失败。
+
 ## 3. 这次验证到的事实
 
 - `MM` 用哈希区分：`chezmoi state dump --format json` 的 `entryState[<绝对路径>].contentsSHA256` vs `chezmoi cat` 输出的 sha256。符号链接的记录不含 `cat` 末尾的换行。

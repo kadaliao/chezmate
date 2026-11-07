@@ -36,7 +36,7 @@ Chezmate 不重新实现 chezmoi。所有操作都调用你机器上真实的 `c
 ## 环境要求
 
 - Rust 1.88+（开发时使用 1.99）
-- chezmoi 2.x（开发时使用 2.73.3），需在 `PATH` 或常见安装目录中（`/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等），也可用 `CHEZMATE_CHEZMOI` 或 `--chezmoi` 指定
+- chezmoi 2.x（开发时使用 2.73.3），需在 `PATH` 或常见安装目录中（`/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等），也可用 `CHEZMATE_CHEZMOI` 或 `--chezmoi` 指定。发布的桌面应用自带一份官方 chezmoi，电脑上没装时用它，装了就用装好的
 - 桌面应用目前在 macOS 上开发和验证；GPUI 同样支持 Linux 和 Windows，但尚未验证
 
 ## 安装
@@ -64,6 +64,14 @@ cargo test                      # 测试（需要已安装 chezmoi）
 ## 桌面应用
 
 界面跟随系统语言显示中文或英文（`CHEZMATE_LANG=zh` / `en` 可以指定）。
+
+### 第一次使用
+
+没用过 chezmoi 的电脑，打开应用后先看到欢迎页，不需要懂 chezmoi，也不需要先在终端里做任何事：
+
+- **这是我的第一台电脑**：在这台电脑上建立共享版本（`chezmoi init`），然后列出在家目录里找到的常见配置文件（`.zshrc`、`.gitconfig`、`~/.config/nvim` 等，跳过符号链接、大文件和常含密钥的文件），勾选后加入共享版本。之后概览页提示「上传到 GitHub」：装了并登录 [GitHub CLI](https://cli.github.com)（`gh`）时一键新建私有仓库并上传；否则粘贴一个空仓库的地址（GitHub、GitLab 等都可以）。
+- **我已经在别的电脑上用过**：输入 GitHub 用户名或仓库地址，取回共享版本（`chezmoi init <仓库>`，不 apply），家目录里什么都不会变；配置模板里有 `promptString` 这类问题时，以表单形式提问（也可以跳过）。之后在概览页逐个检查，再同步。
+- 电脑上的 Git 没有设置用户名和邮箱时，Chezmate 只给共享版本这个仓库设一个，保证能提交。
 
 - **概览**（首页）：按「需要你决定 / 这台电脑上改过 / 有新版本 / 设置步骤」分组列出文件；右侧用一句话说明状态，给出合适的选择，并显示差异（说明红绿各代表哪边）。顶部是「同步」按钮。
 

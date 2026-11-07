@@ -98,6 +98,26 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// This computer's name without its domain, or `localhost`.
+pub fn short_hostname() -> String {
+    #[cfg(unix)]
+    {
+        let mut buffer = [0u8; 256];
+        // SAFETY: the buffer is valid for its length; gethostname writes at
+        // most that many bytes.
+        let ok = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } == 0;
+        if ok {
+            let end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+            let name = String::from_utf8_lossy(&buffer[..end]);
+            let short = name.split('.').next().unwrap_or_default().trim();
+            if !short.is_empty() {
+                return short.to_string();
+            }
+        }
+    }
+    "localhost".to_string()
+}
+
 /// A human-readable rendering of a command line for messages.
 pub fn display_command(program: &str, args: &[OsString]) -> String {
     let mut text = program.to_string();

@@ -31,6 +31,10 @@ pub struct ChezmoiOptions {
     /// Path to the chezmoi executable. Defaults to `$CHEZMATE_CHEZMOI`, then a
     /// search of `PATH` plus common install locations.
     pub binary: Option<PathBuf>,
+    /// A chezmoi to use when the search finds none, such as the copy inside
+    /// the app bundle. One installed by the person always wins, so the app
+    /// and their terminal run the same chezmoi.
+    pub fallback_binary: Option<PathBuf>,
     pub source: Option<PathBuf>,
     pub destination: Option<PathBuf>,
     pub config: Option<PathBuf>,
@@ -156,23 +160,11 @@ impl Chezmoi {
     /// Locates chezmoi and prepares a handle. Does not run chezmoi.
     pub fn new(options: ChezmoiOptions) -> Result<Self> {
         let search_path = process::search_path();
-        let binary = match options
+        let explicit = options
             .binary
             .clone()
-            .or_else(|| std::env::var_os("CHEZMATE_CHEZMOI").map(PathBuf::from))
-        {
-            Some(binary) if binary.is_file() => binary,
-            Some(binary) => {
-                return Err(Error::ChezmoiNotFound {
-                    searched: binary.display().to_string(),
-                });
-            }
-            None => process::find_executable("chezmoi", &search_path).ok_or_else(|| {
-                Error::ChezmoiNotFound {
-                    searched: search_path.to_string_lossy().into_owned(),
-                }
-            })?,
-        };
+            .or_else(|| std::env::var_os("CHEZMATE_CHEZMOI").map(PathBuf::from));
+        let binary = locate(explicit, options.fallback_binary.as_deref(), &search_path)?;
         Ok(Self {
             binary,
             options,
@@ -224,16 +216,19 @@ impl Chezmoi {
         let mut command = Command::new(&self.binary);
         command.args(self.global_args()).args(args);
         command.env("PATH", &self.search_path);
+        // Git started by chezmoi (cloning, for example) must fail rather
+        // than ask for a user name on a terminal nobody is watching.
+        command.env("GIT_TERMINAL_PROMPT", "0");
         command.envs(self.options.env.iter().map(|(k, v)| (k, v)));
         command
     }
 
-    fn display(&self, args: &[OsString]) -> String {
+    pub(crate) fn display(&self, args: &[OsString]) -> String {
         process::display_command("chezmoi", args)
     }
 
     /// Runs chezmoi and returns its output whatever the exit status.
-    fn exec(&self, args: Vec<OsString>, timeout: Option<Duration>) -> Result<Captured> {
+    pub(crate) fn exec(&self, args: Vec<OsString>, timeout: Option<Duration>) -> Result<Captured> {
         let display = self.display(&args);
         process::run(self.command(&args), &display, timeout)
     }
@@ -248,6 +243,11 @@ impl Chezmoi {
     fn run_captured(&self, args: Vec<OsString>, timeout: Option<Duration>) -> Result<Captured> {
         let display = self.display(&args);
         let captured = self.exec(args, timeout)?;
+        Self::check(&display, captured)
+    }
+
+    /// The output of a finished command, or the error its failure means.
+    pub(crate) fn check(display: &str, captured: Captured) -> Result<Captured> {
         if captured.success() {
             return Ok(captured);
         }
@@ -259,7 +259,7 @@ impl Chezmoi {
             });
         }
         Err(Error::Failed {
-            command: display,
+            command: display.to_string(),
             code: captured.status.code(),
             stderr: if captured.stderr.trim().is_empty() {
                 captured.stdout
@@ -614,6 +614,26 @@ fn push_types(args: &mut Vec<OsString>, flag: &str, types: &[EntryType]) {
     }
 }
 
+/// The chezmoi to run: the one asked for, else the first on `search_path`,
+/// else `fallback`.
+fn locate(
+    explicit: Option<PathBuf>,
+    fallback: Option<&Path>,
+    search_path: &std::ffi::OsStr,
+) -> Result<PathBuf> {
+    match explicit {
+        Some(binary) if binary.is_file() => Ok(binary),
+        Some(binary) => Err(Error::ChezmoiNotFound {
+            searched: binary.display().to_string(),
+        }),
+        None => process::find_executable("chezmoi", search_path)
+            .or_else(|| fallback.filter(|b| b.is_file()).map(Path::to_path_buf))
+            .ok_or_else(|| Error::ChezmoiNotFound {
+                searched: search_path.to_string_lossy().into_owned(),
+            }),
+    }
+}
+
 /// The config file template `chezmoi init` reads: `.chezmoi.<format>.tmpl`
 /// at the top of the source directory, in the formats chezmoi knows.
 fn config_template(source_dir: &Path) -> Option<PathBuf> {
@@ -649,6 +669,42 @@ fn conflict_paths(captured: &Captured) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_chezmoi_wins_over_the_bundled_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let make = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        let bundled = make("App/Contents/Helpers/chezmoi");
+        let installed = make("bin/chezmoi");
+        let empty = dir.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let none = locate(None, Some(&bundled), empty.as_os_str()).unwrap();
+        assert_eq!(none, bundled, "nothing installed: the bundled one");
+        let path = dir.path().join("bin");
+        let found = locate(None, Some(&bundled), path.as_os_str()).unwrap();
+        assert_eq!(found, installed, "an installed one wins");
+        let missing = locate(None, Some(&dir.path().join("nope")), empty.as_os_str());
+        assert_eq!(missing.unwrap_err().kind(), "chezmoi_not_found");
+        let explicit = locate(
+            Some(dir.path().join("nope")),
+            Some(&bundled),
+            path.as_os_str(),
+        );
+        assert_eq!(
+            explicit.unwrap_err().kind(),
+            "chezmoi_not_found",
+            "an explicit path is never replaced"
+        );
+    }
 
     #[test]
     fn parses_entry_state_only() {

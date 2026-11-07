@@ -226,8 +226,42 @@ impl Git {
             return Err(Error::InvalidRequest("nothing to commit".into()));
         }
         self.run(&["add", "--all"], LOCAL_TIMEOUT)?;
-        self.run(&["commit", "--quiet", "-m", message], LOCAL_TIMEOUT)?;
+        let mut args = self.identity_fallback()?;
+        args.extend(["commit", "--quiet", "-m", message].map(String::from));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.run(&args, LOCAL_TIMEOUT)?;
         Ok(self.head()?.unwrap_or_default())
+    }
+
+    /// `-c user.name=… -c user.email=…` for what git cannot work out by
+    /// itself, so that committing works on a computer where git was never
+    /// set up. Only used for one commit; nothing is written to a config, so
+    /// an identity set up later (or one that applies only once a remote is
+    /// added) takes over.
+    fn identity_fallback(&self) -> Result<Vec<String>> {
+        let known =
+            |var: &str| -> Result<bool> { Ok(self.exec(&["var", var], LOCAL_TIMEOUT)?.success()) };
+        if known("GIT_AUTHOR_IDENT")? && known("GIT_COMMITTER_IDENT")? {
+            return Ok(Vec::new());
+        }
+        let configured = |key: &str| -> Result<bool> {
+            let captured = self.exec(&["config", "--get", key], LOCAL_TIMEOUT)?;
+            Ok(captured.success() && !captured.stdout.trim().is_empty())
+        };
+        let user = ["USER", "LOGNAME"]
+            .iter()
+            .filter_map(|var| std::env::var(var).ok())
+            .find(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "chezmate".to_string());
+        let mut args = Vec::new();
+        if !configured("user.name")? {
+            args.extend(["-c".to_string(), format!("user.name={user}")]);
+        }
+        if !configured("user.email")? {
+            let host = process::short_hostname();
+            args.extend(["-c".to_string(), format!("user.email={user}@{host}")]);
+        }
+        Ok(args)
     }
 
     pub fn fetch(&self) -> Result<()> {
@@ -304,6 +338,57 @@ impl Git {
 
     pub fn push(&self) -> Result<()> {
         self.run(&["push", "--quiet"], NETWORK_TIMEOUT).map(drop)
+    }
+
+    /// Makes the working tree a repository.
+    pub fn init(&self) -> Result<()> {
+        // `git -C` needs the directory to exist.
+        std::fs::create_dir_all(&self.repo).map_err(|source| Error::Io {
+            context: format!("creating {}", self.repo.display()),
+            source,
+        })?;
+        self.run(&["init", "--quiet"], LOCAL_TIMEOUT).map(drop)
+    }
+
+    /// The URL of the `origin` remote, if there is one.
+    pub fn remote_url(&self) -> Result<Option<String>> {
+        let captured = self.exec(&["remote", "get-url", "origin"], LOCAL_TIMEOUT)?;
+        Ok(captured
+            .success()
+            .then(|| captured.stdout.trim().to_string())
+            .filter(|url| !url.is_empty()))
+    }
+
+    /// The names of all remotes.
+    pub fn remotes(&self) -> Result<Vec<String>> {
+        Ok(self
+            .run(&["remote"], LOCAL_TIMEOUT)?
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Adds `url` as `origin`.
+    pub fn add_remote(&self, url: &str) -> Result<()> {
+        self.run(&["remote", "add", "origin", url], LOCAL_TIMEOUT)
+            .map(drop)
+    }
+
+    /// Removes `origin`.
+    pub fn remove_remote(&self) -> Result<()> {
+        self.run(&["remote", "remove", "origin"], LOCAL_TIMEOUT)
+            .map(drop)
+    }
+
+    /// Pushes the current branch to `origin` and tracks it from then on.
+    pub fn push_upstream(&self) -> Result<()> {
+        self.run(
+            &["push", "--quiet", "--set-upstream", "origin", "HEAD"],
+            NETWORK_TIMEOUT,
+        )
+        .map(drop)
     }
 }
 

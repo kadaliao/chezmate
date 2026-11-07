@@ -24,6 +24,7 @@ use crate::i18n::tr;
 use crate::model::{Dotfiles, DotfilesEvent};
 use crate::overview::{OverviewView, headline};
 use crate::repository::RepositoryView;
+use crate::setup::SetupView;
 
 gpui_kit::actions!(chezmate, [Refresh, Quit]);
 
@@ -64,6 +65,7 @@ pub struct Chezmate {
     files: Entity<FilesView>,
     repository: Entity<RepositoryView>,
     environment: Entity<EnvironmentView>,
+    setup: Entity<SetupView>,
     /// Demo mode: the setup is made up, in a temporary folder.
     demo: bool,
     _subscriptions: Vec<Subscription>,
@@ -77,6 +79,7 @@ impl Chezmate {
         let files = cx.new(|cx| FilesView::new(model.clone(), window, cx));
         let repository = cx.new(|cx| RepositoryView::new(model.clone(), window, cx));
         let environment = cx.new(|cx| EnvironmentView::new(model.clone(), window, cx));
+        let setup = cx.new(|cx| SetupView::new(model.clone(), window, cx));
         let subscriptions = vec![
             cx.observe(&model, |_, _, cx| cx.notify()),
             cx.subscribe_in(&model, window, |_, _, event: &DotfilesEvent, window, cx| {
@@ -114,6 +117,7 @@ impl Chezmate {
             files,
             repository,
             environment,
+            setup,
             demo: false,
             _subscriptions: subscriptions,
         }
@@ -254,6 +258,8 @@ impl Chezmate {
 
 impl Render for Chezmate {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Until this computer is set up, the setup page is all there is.
+        let in_setup = self.model.read(cx).setup().is_some();
         let page: AnyView = match self.page {
             Page::Overview => self.overview.clone().into(),
             Page::Changes => self.changes.clone().into(),
@@ -308,14 +314,21 @@ impl Render for Chezmate {
                         ),
                 ),
             )
-            .child(
+            .child(if in_setup {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.setup.clone())
+                    .into_any_element()
+            } else {
                 h_flex()
                     .flex_1()
                     .min_h_0()
                     .items_stretch()
                     .child(self.render_sidebar(cx))
-                    .child(div().flex_1().min_w_0().min_h_0().child(page)),
-            )
+                    .child(div().flex_1().min_w_0().min_h_0().child(page))
+                    .into_any_element()
+            })
             .child(self.render_status_bar(cx))
     }
 }
