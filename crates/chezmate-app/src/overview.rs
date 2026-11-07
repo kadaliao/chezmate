@@ -34,7 +34,7 @@ use gpui_kit::{
 
 use crate::changes::{SelectNext, SelectPrevious, error_state, loading_state};
 use crate::i18n::tr;
-use crate::model::{Dotfiles, DotfilesEvent, Snapshot};
+use crate::model::{Dotfiles, DotfilesEvent, Prepared, Snapshot};
 
 /// A row of the overview list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,8 +337,8 @@ impl OverviewView {
                 &model,
                 window,
                 |this, _, event: &DotfilesEvent, window, cx| {
-                    if let DotfilesEvent::SyncReady(overview) = event {
-                        this.review(overview.clone(), window, cx);
+                    if let DotfilesEvent::SyncReady(prepared) = event {
+                        this.review(prepared.clone(), window, cx);
                     }
                 },
             ),
@@ -435,8 +435,8 @@ impl OverviewView {
     }
 
     /// Opens the sync review for a freshly prepared overview.
-    fn review(&mut self, overview: Arc<Overview>, window: &mut Window, cx: &mut Context<Self>) {
-        let review = cx.new(|_| SyncReview::new(overview));
+    fn review(&mut self, prepared: Arc<Prepared>, window: &mut Window, cx: &mut Context<Self>) {
+        let review = cx.new(|_| SyncReview::new(prepared));
         let model = self.model.clone();
         window.open_alert_dialog(cx, move |alert, _, cx| {
             let model = model.clone();
@@ -1162,22 +1162,26 @@ impl Render for OverviewView {
 /// The sync review inside the confirmation dialog: what will be saved
 /// (each can be unchecked), updated, run and left alone.
 pub struct SyncReview {
-    overview: Arc<Overview>,
+    prepared: Arc<Prepared>,
     /// Changes on this computer the person chose not to save this time.
     excluded: BTreeSet<String>,
 }
 
 impl SyncReview {
-    fn new(overview: Arc<Overview>) -> Self {
+    fn new(prepared: Arc<Prepared>) -> Self {
         Self {
-            overview,
+            prepared,
             excluded: BTreeSet::new(),
         }
     }
 
+    fn overview(&self) -> &Overview {
+        &self.prepared.overview
+    }
+
     pub fn plan(&self) -> SyncPlan {
         let skip: Vec<String> = self.excluded.iter().cloned().collect();
-        SyncPlan::new(&self.overview, &skip)
+        SyncPlan::new(self.overview(), &skip)
     }
 
     fn summary(&self) -> String {
@@ -1198,7 +1202,7 @@ impl SyncReview {
         }
         let upload = plan.upload
             && self
-                .overview
+                .overview()
                 .shared
                 .as_ref()
                 .is_some_and(|s| s.upstream.is_some());
@@ -1239,7 +1243,7 @@ impl SyncReview {
 impl Render for SyncReview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = window;
-        let plan = SyncPlan::new(&self.overview, &[]);
+        let plan = SyncPlan::new(self.overview(), &[]);
         let section = |title: String, cx: &App| {
             div()
                 .pt_2()
@@ -1250,6 +1254,20 @@ impl Render for SyncReview {
         };
         let line = |text: String| div().text_sm().truncate().child(text);
         let mut body = v_flex().gap_1().w_full();
+        if let Some(err) = &self.prepared.offline {
+            let message = tr(
+                format!(
+                    "Could not reach the remote, so this sync covers this computer only and uploading will fail. Sync again when you are online. ({err})"
+                ),
+                format!("连不上远端：这次只同步这台电脑，上传会失败，联网后再同步一次。（{err}）"),
+            );
+            body = body.child(
+                div()
+                    .id("offline")
+                    .pb_2()
+                    .child(Alert::warning("offline-alert", message).small()),
+            );
+        }
 
         if !plan.save.is_empty() {
             body = body.child(section(
@@ -1282,7 +1300,7 @@ impl Render for SyncReview {
             ));
             for target in &plan.update {
                 let deleted = self
-                    .overview
+                    .overview()
                     .file(target)
                     .is_some_and(|f| f.incoming == Change::Deleted);
                 body = body.child(line(if deleted {
@@ -1321,7 +1339,7 @@ impl Render for SyncReview {
         }
         if plan.upload
             && self
-                .overview
+                .overview()
                 .shared
                 .as_ref()
                 .is_some_and(|s| s.upstream.is_none())
@@ -1403,14 +1421,17 @@ mod tests {
 
     #[test]
     fn review_unchecks_saves() {
-        let overview = Arc::new(Overview {
+        let overview = Overview {
             files: vec![
                 file(".a", FileState::ChangedHere),
                 file(".b", FileState::ChangedHere),
             ],
             ..Default::default()
-        });
-        let mut review = SyncReview::new(overview);
+        };
+        let mut review = SyncReview::new(Arc::new(Prepared {
+            overview,
+            offline: None,
+        }));
         assert_eq!(review.plan().save, vec![".a", ".b"]);
         review.excluded.insert(".a".into());
         let plan = review.plan();

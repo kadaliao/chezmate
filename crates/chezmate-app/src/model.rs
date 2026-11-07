@@ -60,6 +60,14 @@ impl Snapshot {
     }
 }
 
+/// Step one of a sync, done: what to show for confirmation.
+pub struct Prepared {
+    pub overview: Overview,
+    /// The remote could not be reached; the sync can still cover this
+    /// computer, but uploading will fail.
+    pub offline: Option<String>,
+}
+
 /// The outcome of an operation, shown as a notification.
 pub enum DotfilesEvent {
     Finished(Result<String, String>),
@@ -67,7 +75,7 @@ pub enum DotfilesEvent {
     Committed,
     /// The shared version is up to date; the sync runs once someone
     /// confirms the plan made from this overview.
-    SyncReady(Arc<Overview>),
+    SyncReady(Arc<Prepared>),
 }
 
 pub enum DoctorState {
@@ -238,16 +246,38 @@ impl Dotfiles {
     pub fn prepare_sync(&mut self, cx: &mut Context<Self>) {
         self.run_with(
             tr("Checking the shared version", "正在检查共享版本"),
-            |chezmoi| -> Result<(u32, Overview), String> {
-                let pulled = chezmoi.pull_shared().map_err(|err| err.to_string())?;
+            |chezmoi| -> Result<(u32, Prepared), String> {
+                // Offline, the sync can still save and update on this
+                // computer. A pull that fails for another reason (a
+                // conflict) stops the sync.
+                let (pulled, offline) = match chezmoi.fetch_shared() {
+                    Ok(0) => (0, None),
+                    Ok(behind) => {
+                        chezmoi.git().and_then(|git| git.pull()).map_err(|err| {
+                            tr(
+                                format!("Could not get the shared version: {err}"),
+                                format!("获取共享版本失败：{err}"),
+                            )
+                        })?;
+                        (behind, None)
+                    }
+                    Err(err) => (0, Some(first_line(&err.to_string()))),
+                };
                 let overview = chezmoi.overview().map_err(|err| err.to_string())?;
-                Ok((pulled, overview))
+                Ok((pulled, Prepared { overview, offline }))
             },
             |_, result, cx| match result {
-                Ok((pulled, overview)) => {
-                    let plan = SyncPlan::new(&overview, &[]);
+                Ok((pulled, prepared)) => {
+                    let plan = SyncPlan::new(&prepared.overview, &[]);
                     if !plan.is_empty() {
-                        cx.emit(DotfilesEvent::SyncReady(Arc::new(overview)));
+                        cx.emit(DotfilesEvent::SyncReady(Arc::new(prepared)));
+                        return;
+                    }
+                    if let Some(err) = prepared.offline {
+                        cx.emit(DotfilesEvent::Finished(Err(tr(
+                            format!("Could not reach the remote: {err}"),
+                            format!("连不上远端：{err}"),
+                        ))));
                         return;
                     }
                     let mut message = if pulled > 0 {
@@ -532,6 +562,16 @@ impl Dotfiles {
     }
 }
 
+/// The gist of a failed command: its first line of output, without the
+/// "`git fetch` failed (exit 128): " prefix.
+fn first_line(message: &str) -> String {
+    let line = message.lines().next().unwrap_or_default();
+    line.split_once("): ")
+        .map_or(line, |(_, rest)| rest)
+        .trim()
+        .to_string()
+}
+
 fn decide_note(count: usize) -> String {
     tr(
         if count == 1 {
@@ -722,6 +762,17 @@ mod tests {
 
     /// chezmoi's diff includes directories (header only), symlinks, scripts
     /// and templates; all of them must parse and line up with status paths.
+    #[test]
+    fn first_line_drops_the_command() {
+        assert_eq!(
+            first_line(
+                "`git fetch --quiet` failed (exit 128): ssh: Could not resolve hostname github.com\nfatal: Could not read"
+            ),
+            "ssh: Could not resolve hostname github.com"
+        );
+        assert_eq!(first_line("plain"), "plain");
+    }
+
     #[test]
     fn diff_of_every_entry_kind_parses() {
         let root = tempfile::tempdir().unwrap();

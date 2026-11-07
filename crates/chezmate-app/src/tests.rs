@@ -14,6 +14,7 @@ use gpui_kit::{
 use tempfile::TempDir;
 
 use crate::app::{Chezmate, Page};
+use crate::model::DotfilesEvent;
 use crate::overview::Selection;
 use chezmate_core::FileState;
 
@@ -677,4 +678,83 @@ fn sync_brings_computers_together(cx: &mut TestAppContext) {
         overview_files(&view, cx),
         vec![(".b".into(), FileState::ChangedHere)]
     );
+}
+
+/// Without the remote, a sync still saves and commits on this computer;
+/// only uploading fails.
+#[gpui_kit::test]
+fn sync_works_offline(cx: &mut TestAppContext) {
+    let mut sb = Sandbox::new(&[]);
+    let base = sb.home.parent().unwrap().to_path_buf();
+    let config = base.join("gitconfig");
+    fs::write(
+        &config,
+        "[user]\n\tname = Test\n\temail = test@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n",
+    )
+    .unwrap();
+    let env = &mut sb.options.env;
+    env.push(("GIT_CONFIG_GLOBAL".into(), config.clone().into()));
+    env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+    let remote = base.join("remote.git");
+    git(
+        &base,
+        &config,
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    fs::write(sb.source.join("dot_hello"), "hello\n").unwrap();
+    git(&sb.source, &config, &["init", "-q"]);
+    git(&sb.source, &config, &["add", "-A"]);
+    git(&sb.source, &config, &["commit", "-q", "-m", "Initial"]);
+    git(
+        &sb.source,
+        &config,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&sb.source, &config, &["push", "-q", "-u", "origin", "main"]);
+    sb.chezmoi().apply(&[], &ApplyOptions::default()).unwrap();
+    fs::remove_dir_all(&remote).unwrap();
+    fs::write(sb.home.join(".hello"), "edited offline\n").unwrap();
+
+    let (handle, view) = open(cx, &sb);
+    let offline = std::rc::Rc::new(std::cell::Cell::new(false));
+    let _subscription = cx.update(|cx| {
+        let model = view.read(cx).model().clone();
+        let offline = offline.clone();
+        cx.subscribe(&model, move |_, event: &DotfilesEvent, _| {
+            if let DotfilesEvent::SyncReady(prepared) = event {
+                offline.set(prepared.offline.is_some());
+            }
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("sync", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        offline.get(),
+        "the review warns that the remote is unreachable"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "the plan is still shown");
+        assert!(window.try_find("save:.hello").is_some());
+    })
+    .unwrap();
+    click(cx, handle, &["ok"]);
+    assert_eq!(
+        fs::read_to_string(sb.source.join("dot_hello")).unwrap(),
+        "edited offline\n"
+    );
+    assert_eq!(
+        git(&sb.source, &config, &["log", "-1", "--format=%s"]).trim(),
+        "Update ~/.hello"
+    );
+    assert!(overview_files(&view, cx).is_empty());
+    cx.read(|cx| {
+        let snapshot = view.read(cx).model().read(cx).snapshot().cloned().unwrap();
+        let shared = snapshot.overview.shared.clone().unwrap();
+        assert_eq!(shared.ahead, 1, "waiting to be uploaded");
+    });
 }

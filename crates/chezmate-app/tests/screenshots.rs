@@ -262,4 +262,13 @@ fn main() {
 
     cx.update(|cx| view.update(cx, |view, cx| view.set_page(Page::Changes, cx)));
     shoot(&mut cx, "advanced-changes");
+
+    // Offline: the remote is gone.
+    fs::remove_dir_all(base.join("remote.git")).unwrap();
+    cx.update(|cx| {
+        view.update(cx, |view, cx| view.set_page(Page::Overview, cx));
+        let model = view.read(cx).model().clone();
+        model.update(cx, |model, cx| model.prepare_sync(cx));
+    });
+    shoot(&mut cx, "sync-review-offline");
 }
