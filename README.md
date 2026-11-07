@@ -69,6 +69,30 @@ chezmate git commit -m "说明"     # 提交源目录的全部变更
 
 错误类型 `kind`：`chezmoi_not_found`、`git_not_found`、`spawn_failed`、`timeout`、`conflict`、`command_failed`、`parse_error`、`invalid_request`、`io_error`。失败时退出码为 1。
 
+## MCP（给 AI Agent）
+
+`chezmate mcp` 通过 stdio 提供 [Model Context Protocol](https://modelcontextprotocol.io) 服务，同时支持 2026-07-28 的无状态协议和 2025-11-25 及更早的 `initialize` 握手协议。
+
+```sh
+cargo install --path crates/chezmate-cli          # 安装 chezmate 到 ~/.cargo/bin
+claude mcp add chezmate -- chezmate mcp           # Claude Code
+claude mcp add chezmate -- chezmate mcp --read-only
+```
+
+其他客户端：
+
+```json
+{ "mcpServers": { "chezmate": { "command": "chezmate", "args": ["mcp"] } } }
+```
+
+工具：`chezmoi_info`、`chezmoi_status`、`chezmoi_managed`、`chezmoi_diff`、`chezmoi_apply`、`chezmoi_add`、`chezmoi_re_add`、`chezmoi_forget`、`git_status`、`git_log`、`git_diff`、`git_commit`、`git_fetch`、`git_pull`、`git_push`。
+
+- `chezmoi_apply` 默认是 dry run，必须传 `"dry_run": false` 才会写入；
+- `chezmoi_diff` 默认不包含加密文件（`include_encrypted: true` 才包含）。模板渲染结果仍可能含有密码管理器提供的内容；
+- `--read-only` 只暴露只读工具；
+- 工具失败返回 `isError: true`，`structuredContent` 里是和 CLI 相同的 `{kind, message, …}`；
+- 每个工具都带 `readOnlyHint` / `destructiveHint` 等标注。
+
 ### 状态的两列含义
 
 `status` 的每一项有两个字段：

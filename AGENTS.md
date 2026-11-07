@@ -6,7 +6,8 @@ Guidance for AI agents working on this repository.
 
 ```
 crates/chezmate-core   chezmoi client: runs the real chezmoi, parses output. No GUI deps.
-crates/chezmate-cli    `chezmate` binary. Thin: argument parsing + output rendering.
+crates/chezmate-cli    `chezmate` binary. Thin: argument parsing + output rendering,
+                       plus the MCP server (`src/mcp.rs`, `chezmate mcp`).
 crates/chezmate-app    GPUI Kit desktop app. Depends on core only.
 docs/STATUS.md         Implementation status. Update it when a phase changes.
 ```
@@ -32,8 +33,12 @@ logic in the app or CLI; add it to core with a test.
   typed error (`Error::Conflict` for apply).
 - **Don't leak secrets.** Don't call `chezmoi data` (it returns user template
   data); `Chezmoi::paths` asks for exactly the paths via `execute-template`.
-- Keep error `kind()` strings and CLI JSON field names stable: agents rely on
-  them. Add new ones rather than renaming.
+- Keep error `kind()` strings, CLI JSON field names and MCP tool names and
+  arguments stable: agents rely on them. Add new ones rather than renaming.
+- MCP tools that write must keep safe defaults (`chezmoi_apply` dry run,
+  diffs without encrypted files) and correct `readOnlyHint` /
+  `destructiveHint`. A new tool needs an end-to-end case in
+  `crates/chezmate-cli/tests/mcp.rs`.
 
 ## GPUI Kit
 

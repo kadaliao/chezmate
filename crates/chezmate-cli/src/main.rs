@@ -1,5 +1,6 @@
 //! `chezmate`: chezmoi operations with predictable, machine-readable output.
 
+mod mcp;
 mod output;
 
 use std::path::PathBuf;
@@ -107,6 +108,15 @@ enum Command {
     /// The git repository behind the source directory.
     #[command(subcommand)]
     Git(GitCommand),
+    /// Serve the Model Context Protocol over stdio for AI agents.
+    ///
+    /// Speaks both the 2026-07-28 stateless protocol and the earlier
+    /// initialize-based revisions. Logs go to stderr.
+    Mcp {
+        /// Expose only tools that do not change anything.
+        #[arg(long)]
+        read_only: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -136,6 +146,16 @@ enum GitCommand {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Mcp { read_only } = cli.command {
+        // Start even without chezmoi: tools then report `chezmoi_not_found`.
+        return match mcp::serve(connect(cli.chezmoi), read_only) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("chezmate mcp: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let out = Output::new(cli.json);
     match run(cli.command, cli.chezmoi, &out) {
         Ok(()) => ExitCode::SUCCESS,
@@ -296,6 +316,7 @@ fn run(command: Command, args: ChezmoiArgs, out: &Output) -> Result<(), Error> {
             out.data(&checks, || output::doctor(&checks));
         }
         Command::Git(command) => run_git(command, &chezmoi, out)?,
+        Command::Mcp { .. } => unreachable!("handled in main"),
     }
     Ok(())
 }

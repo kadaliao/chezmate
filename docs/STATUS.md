@@ -10,7 +10,7 @@
 | 1 | Core（真实 chezmoi 操作）+ CLI（`--json`） | 完成 |
 | 2 | GUI：变更列表、差异视图、应用 / 保留本地修改、托管文件、环境 | 完成（视觉效果待人工确认） |
 | 3 | Git：源仓库状态、提交、拉取、推送 | 完成 |
-| 4 | MCP 服务（`chezmate mcp`，stdio） | 未开始 |
+| 4 | MCP 服务（`chezmate mcp`，stdio） | 完成 |
 
 ## 已实现（Core / CLI）
 
@@ -40,6 +40,16 @@
 网络操作设置 `GIT_TERMINAL_PROMPT=0`（需要凭据时直接失败，不会挂起），并有 180 秒超时。SSH 私钥需要由 ssh-agent / 钥匙串提供。
 
 测试：解析单元测试；沙箱集成测试使用本地裸仓库作为远端，另一个克隆模拟另一台机器（推送、获取、拉取、冲突回滚、空仓库）；git 全局配置隔离（`GIT_CONFIG_GLOBAL`、`GIT_CONFIG_NOSYSTEM`）。
+
+## 已实现（MCP）
+
+`chezmate mcp [--read-only]`，stdio，换行分隔的 JSON-RPC 2.0，手写实现（只依赖 serde_json）。
+
+- 双时代：`initialize` 进入旧协议（协商 2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05）；带 `_meta["io.modelcontextprotocol/protocolVersion"]` 的请求按 2026-07-28 无状态处理（结果带 `resultType`、`_meta` 中的 serverInfo，`tools/list` 带 `ttlMs` / `cacheScope`）；不支持的版本返回 `-32022` 并列出支持的版本；实现 `server/discover`；兼容 JSON-RPC 批量请求；
+- 15 个工具，顺序固定；参数用 `deny_unknown_fields` 严格校验，错误作为工具结果（`isError`）返回；
+- 安全默认：apply 默认 dry run，diff 默认排除加密文件，`--read-only` 隐藏所有写操作；chezmoi 不存在时服务仍启动，工具返回 `chezmoi_not_found`。
+
+测试：协议单元测试；端到端测试启动真实 `chezmate mcp` 进程，分别用旧协议和新协议完成 状态 → diff → dry run → apply → 冲突 → re-add 流程，并验证只读模式无法写入。已对本机真实配置做只读冒烟测试。
 
 ## 已实现（GUI）
 
