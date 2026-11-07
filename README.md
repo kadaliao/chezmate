@@ -39,6 +39,17 @@ Chezmate 不重新实现 chezmoi。所有操作都调用你机器上真实的 `c
 - chezmoi 2.x（开发时使用 2.73.3），需在 `PATH` 或常见安装目录中（`/opt/homebrew/bin`、`/usr/local/bin`、`~/.local/bin` 等），也可用 `CHEZMATE_CHEZMOI` 或 `--chezmoi` 指定
 - 桌面应用目前在 macOS 上开发和验证；GPUI 同样支持 Linux 和 Windows，但尚未验证
 
+## 安装
+
+从 [Releases](https://github.com/kadaliao/chezmate/releases) 下载，目前只有 Apple Silicon 的 macOS 版：
+
+- `Chezmate-<版本>-macos-arm64.zip`：桌面应用，解压后拖进「应用程序」；
+- `chezmate-<版本>-macos-arm64.tar.gz`：命令行（含 MCP 服务器），解压后把 `chezmate` 放进 `PATH`。
+
+应用只做了临时签名，没有经过 Apple 公证，浏览器下载的文件第一次打开会被 macOS 拦下：到「系统设置 › 隐私与安全性」点「仍要打开」，或者运行 `xattr -dr com.apple.quarantine /Applications/Chezmate.app`（命令行同理）。
+
+自己打包：`scripts/package-macos.sh`，产物在 `dist/`。
+
 ## 构建与运行
 
 ```sh

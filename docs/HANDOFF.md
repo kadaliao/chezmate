@@ -13,7 +13,7 @@
 
 ## 2. 现状（已完成、已提交）
 
-本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。2026-11-07 起推送到公开仓库 https://github.com/kadaliao/chezmate（`origin`）。用户说还要再改，**先不打标签、不发 Release**，等用户说了再发 v0.1.0。
+本次会话的提交（从 `b669634` 之后）：Core 同步模型 → CLI/MCP → GUI 概览页 → 离屏截图与文案修正 → 离线同步 → 拉取冲突修复 → 独立审查后的修复（目录递归 apply 会覆盖同目录文件、本机改过权限的文件夹被隐藏、`exact_` 目录删除本机文件）。2026-11-07 起推送到公开仓库 https://github.com/kadaliao/chezmate（`origin`），同日发布 v0.1.0（GitHub Release 附 Apple Silicon 的 `Chezmate.app` 压缩包和命令行，用 `scripts/package-macos.sh` 打包；应用只做临时签名，未公证）。发新版本：改 `Cargo.toml` 的 `workspace.package.version`，运行脚本，打 `v<版本>` 标签，`gh release create` 上传 `dist/` 里的文件。
 
 | 部分 | 内容 |
 | --- | --- |
